@@ -93,6 +93,8 @@ abstract contract WeirTestBase is Test {
         return bytes32(uint256(keccak256(abi.encode("oracle uuid", receipt))) & ~uint256(type(uint128).max));
     }
 
+    /// @dev Synthetic receipt-matched input for submitAttestation's ABI/validation tests only. The live
+    /// oracle signs a distinct UUID; settlement scenarios must use _oracleAttestation instead.
     function _attestation(uint256 id, bool accepted) internal view returns (OracleAttestation.Attestation memory a) {
         a.requestId = weir.streams(id).requestId;
         a.chainId = block.chainid;
@@ -117,10 +119,12 @@ abstract contract WeirTestBase is Test {
     }
 
     function _rule(uint256 id, bool accepted) internal {
-        OracleAttestation.Attestation memory a = _attestation(id, accepted);
+        bytes32 receipt = weir.streams(id).requestId;
+        OracleAttestation.Attestation memory a = _oracleAttestation(id, accepted);
         bytes memory signature = _sign(a);
-        vm.prank(stranger);
-        weir.submitAttestation(id, a, signature);
+        assertNotEq(a.requestId, receipt);
+        (bool called,) = intake.deliver(receipt, a, signature);
+        assertTrue(called, "the live-shaped ruling must fit the Intake callback stipend");
     }
 
     function _conserved(uint256 id) internal view {
