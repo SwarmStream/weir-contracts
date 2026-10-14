@@ -180,7 +180,9 @@ contract SolvencyHandler is Test {
         (uint256 id, Weir.Stream memory s) = _pickIn(seed, Weir.State.Disputed);
         if (id == 0) return;
         OracleAttestation.Attestation memory a;
-        a.requestId = viaIntake ? keccak256(abi.encode("uuid", s.requestId)) : s.requestId;
+        // The submission branch deliberately fuzzes synthetic ABI inputs. It does not model live recovery:
+        // the protocol only produces the distinct, sixteen-byte UUID used by the callback branch.
+        a.requestId = viaIntake ? bytes32(bytes16(keccak256(abi.encode("uuid", s.requestId)))) : s.requestId;
         a.chainId = block.chainid;
         a.questionHash = keccak256("doc");
         a.answer = abi.encode(accepted);

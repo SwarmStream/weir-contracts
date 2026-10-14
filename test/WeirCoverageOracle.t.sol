@@ -233,14 +233,18 @@ contract WeirCoverageOracleTest is WeirTestBase {
         _solvent(token);
     }
 
-    // ------------------------------------------------------------------ submitAttestation after a missed callback
+    // ------------------------------------------------------------------ missed callbacks and synthetic submission
 
-    function test_submitAttestationAfterMissedCallbackByAnyone() public {
-        // The Intake's delivery ran out of gas and was never retried.
+    function test_submitAttestationWithSyntheticMatchingReceiptAfterMissedCallback() public {
+        // ABI coverage only: the live oracle signs a UUID distinct from the receipt and cannot produce
+        // this signature. The author's documented recovery limitation remains; this is not a live fallback.
         OracleAttestation.Attestation memory a = _attestation(id, false);
         bytes memory signature = _sign(a);
-        (bool ok,) = address(intake).call{gas: 60_000}(abi.encodeCall(intake.deliver, (receipt, a, signature)));
+        (bool ok, bytes memory result) =
+            address(intake).call{gas: 60_000}(abi.encodeCall(intake.deliver, (receipt, a, signature)));
         assertTrue(ok);
+        (bool delivered,) = abi.decode(result, (bool, bytes));
+        assertFalse(delivered, "Intake catches the failed callback");
         assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Disputed), "under-gassed delivery misses");
         vm.warp(vm.getBlockTimestamp() + 1 days);
         vm.prank(stranger);
@@ -254,6 +258,49 @@ contract WeirCoverageOracleTest is WeirTestBase {
         assertFalse(again);
         weir.enforce(id);
         assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Closed));
+    }
+
+    function test_missedLiveCallbackCanExpireThenReceiveFreshVerdict() public {
+        OracleAttestation.Attestation memory oldAnswer = _oracleAttestation(id, false);
+        bytes memory oldSignature = _sign(oldAnswer);
+        assertNotEq(oldAnswer.requestId, receipt);
+        {
+            (bool intakeCompleted, bytes memory deliveryReturn) =
+                address(intake).call{gas: 60_000}(abi.encodeCall(intake.deliver, (receipt, oldAnswer, oldSignature)));
+            assertTrue(intakeCompleted);
+            (bool delivered,) = abi.decode(deliveryReturn, (bool, bytes));
+            assertFalse(delivered);
+        }
+        assertFalse(weir.consumed(oldAnswer.requestId));
+        assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Disputed));
+        assertEq(weir.streams(id).ruling, 0);
+        assertEq(imd.balanceOf(address(intake)), FEE, "the missed callback does not refund the fee");
+
+        uint256 bond = weir.streams(id).bond;
+        uint256 beforeClient = token.balanceOf(client);
+        vm.warp(weir.streams(id).disputedAt + 7 days + 1);
+        vm.prank(stranger);
+        weir.expireDispute(id);
+        assertEq(token.balanceOf(client) - beforeClient, bond);
+        {
+            (uint32 cw, uint32 cl,,, uint32 raised) = weir.records(client);
+            assertEq(uint256(cw) + cl + raised, 0, "timeout must not invent a verdict");
+            (,, uint32 rw, uint32 rl, uint32 rr) = weir.records(recipient);
+            assertEq(uint256(rw) + rl + rr, 0);
+        }
+
+        bytes32 nextReceipt = _dispute(id, recipient);
+        assertNotEq(nextReceipt, receipt);
+        (bool ok, bytes memory result) = intake.deliver(receipt, oldAnswer, oldSignature);
+        assertFalse(ok);
+        assertEq(result, abi.encodeWithSelector(Weir.UnknownRequest.selector, receipt));
+        assertEq(imd.balanceOf(address(intake)), 2 * FEE, "a new dispute pays for a fresh request");
+        _rule(id, true);
+        assertFalse(weir.consumed(oldAnswer.requestId));
+        weir.enforce(id);
+        assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Active));
+        assertEq(weir.streams(id).rate, RATE);
+        _solvent(token);
     }
 
     function test_submitAttestationRefusesWrongStreamUnknownStreamAndForeignRequestId() public {
@@ -414,9 +461,9 @@ contract WeirCoverageOracleTest is WeirTestBase {
         uint256 before = gasleft();
         weir.onOracleResult(receipt, a, signature);
         uint256 used = before - gasleft();
-        // A first ruling for two parties with empty records writes two fresh record slots and costs about
-        // 161,000 gas cold. That is inside the Intake's 200,000 stipend but above the 150,000 margin the brief
-        // asks for; see .imd-findings.json. The stipend is the bound a missed callback actually depends on.
+        // This checks the protocol stipend only. The stricter assignment requirement (<150,000) fails
+        // even when measuring callee gas without caller overhead; the independent proof is in
+        // .imd-findings.json. Passing the stipend check does not establish that required margin.
         assertLt(used, 200_000, "onOracleResult must fit the Intake's 200,000 stipend cold");
         assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Ruled));
     }

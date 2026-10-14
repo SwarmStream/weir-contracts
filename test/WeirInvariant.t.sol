@@ -202,7 +202,8 @@ contract WeirHandler is Test {
         Model storage m = model[id];
         if (m.state != Weir.State.Disputed) return;
         OracleAttestation.Attestation memory a;
-        a.requestId = weir.streams(id).requestId;
+        bytes32 receipt = weir.streams(id).requestId;
+        a.requestId = bytes32(bytes16(keccak256(abi.encode("oracle uuid", receipt))));
         a.chainId = block.chainid;
         a.questionHash = keccak256("resolved document");
         a.answer = abi.encode(accepted);
@@ -212,7 +213,11 @@ contract WeirHandler is Test {
         a.issuedAt = uint64(vm.getBlockTimestamp());
         a.expiresAt = uint64(vm.getBlockTimestamp() + 7 days);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(0xfeed1234, weir.attestationDigest(a));
-        weir.submitAttestation(id, a, abi.encodePacked(r, s, v));
+        assertNotEq(a.requestId, receipt);
+        (bool delivered,) = intake.deliver(receipt, a, abi.encodePacked(r, s, v));
+        assertTrue(delivered, "a pending model dispute must receive its signed ruling within the stipend");
+        assertTrue(weir.consumed(a.requestId));
+        assertFalse(weir.consumed(receipt));
         m.state = Weir.State.Ruled;
         m.accepted = accepted;
         if (accepted) {
