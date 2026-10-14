@@ -70,7 +70,9 @@ submitAttestation(uint256 id, Attestation a, bytes signature)
 onFailure(bytes32 requestId, uint8 status, bytes32 reason, uint16 agreed, uint16 answered, bytes signature)
 ```
 
-Both callbacks require the immutable Intake as caller. The result callback's first argument is the Intake receipt ID stored at `dispute`; `a.requestId` is the oracle's distinct request UUID, consumed once and never compared with the receipt. Submission is permissionless, additionally requires `a.requestId == stream.requestId`, and otherwise has exactly the same verification and state effects as the result callback. Failure metadata is unsigned and its signature argument is ignored. Status 1 means refusal and status 2 means no panel agreement. Failed and expired requests cannot later accept a result.
+Both callbacks require the immutable Intake as caller. The result callback's first argument is the Intake receipt ID stored at `dispute`; `a.requestId` is the oracle's distinct request UUID, consumed once and never compared with the receipt. Submission is permissionless, additionally requires `a.requestId == stream.requestId`, and otherwise has exactly the same verification and state effects as the result callback. **The live oracle's UUID does not satisfy this equality: do not offer `submitAttestation` as a live recovery action.** After a missed result callback, the available exit is `expireDispute` strictly after the timeout, without a ruling or verdict record. Failure metadata is unsigned and its signature argument is ignored. Status 1 means refusal and status 2 means no panel agreement. Failed and expired requests cannot later accept a result.
+
+Enforcement pays the refund and bond atomically. A rejected transfer leaves the stream `Ruled`, where client refunds and voiding are unavailable. There is no independent bond claim or expiry from `Ruled`; a permanent token blocklist can lock unearned client funds. Recipient withdrawals remain available in every state when the token permits them. See the README's token assumptions before selecting an asset.
 
 `Attestation` is the canonical tuple:
 
