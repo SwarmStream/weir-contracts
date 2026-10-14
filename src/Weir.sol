@@ -82,6 +82,10 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
     error InvalidBoolAnswer();
     error InvalidFailureStatus();
     error DisputeNotExpired();
+    error AlreadyAccepted();
+    error BondExceedsLimit(uint256 bond, uint256 maxBond);
+    error OraclePriceOutOfRange(uint256 price);
+    error NothingToClaim();
 
     event StreamCreated(
         uint256 indexed id,
@@ -94,7 +98,10 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
         string termsURI,
         bytes32 imdJobId
     );
+    event Accepted(uint256 indexed id, address indexed recipient, bytes32 termsHash);
     event Deposited(uint256 indexed id, uint256 amount);
+    event PayoutDeferred(uint256 indexed id, address indexed token, address indexed account, uint256 amount);
+    event Claimed(address indexed token, address indexed account, uint256 amount);
     event Paused(uint256 indexed id, uint128 pausedRate);
     event Restarted(uint256 indexed id, uint128 rate);
     event Adjusted(uint256 indexed id, uint128 oldRate, uint128 newRate);
@@ -122,7 +129,10 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
     event DisputeExpired(uint256 indexed id, bytes32 indexed requestId);
 
     bytes32 public constant ORACLE_ACTION = bytes32("oracle.request@oracle-1");
+    /// @notice The action's price at launch, for reference. The live price is read from the Intake per dispute.
     uint256 public constant ORACLE_PRICE = 5e17;
+    /// @notice Highest live price a dispute will pay; protects disputers and the fund from a mispriced action.
+    uint256 public constant MAX_ORACLE_PRICE = 5e18;
     uint256 public constant MAX_NOTE_BYTES = 280;
     uint256 public constant MAX_TERMS_URI_BYTES = 512;
     uint256 public constant MAX_QUESTION_BYTES = 2000;
@@ -146,6 +156,12 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
     mapping(address => uint256) public escrowed;
     /// @dev Retained permanently to reject reused request ids, including after failure or expiry.
     mapping(bytes32 => uint256) public requestStream;
+    /// @notice When the recipient accepted the stream's terms (accept() or a withdrawal); zero until then.
+    mapping(uint256 => uint256) public acceptedAt;
+    /// @notice Payouts the token refused to deliver, claimable by the owed account; token => account => amount.
+    mapping(address => mapping(address => uint256)) public claimable;
+    /// @notice Sum of claimable amounts per token; a custody obligation beside escrowed and courtFund.
+    mapping(address => uint256) public unclaimed;
 
     constructor(
         IERC20 weir_,
@@ -176,7 +192,9 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
         bytes32 imdJobId
     ) external nonReentrant returns (uint256 id) {
         _holdGate();
-        if (recipient == address(0) || recipient == msg.sender) revert InvalidRecipient();
+        if (recipient == address(0) || recipient == msg.sender || recipient == address(this)) {
+            revert InvalidRecipient();
+        }
         if (address(token) == address(0)) revert ZeroAddress();
         if (rate == 0) revert ZeroRate();
         if (amount == 0) revert ZeroAmount();
@@ -199,6 +217,16 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
         escrowed[address(token)] += amount;
         _assertSolvent(token);
         _emitCreated(id, s);
+    }
+
+    /// @notice The recipient's assent to the stream's terms. A ruling is counted in both parties' records only
+    /// on a stream its recipient accepted; a recipient's withdrawal or dispute counts as acceptance too.
+    function accept(uint256 id) external nonReentrant {
+        Stream storage s = _get(id);
+        if (msg.sender != s.recipient) revert NotRecipient();
+        _requireState(s, State.Active);
+        if (acceptedAt[id] != 0) revert AlreadyAccepted();
+        _accept(id, s);
     }
 
     /// @notice Adds funds from the client, including while a dispute is awaiting a ruling.
@@ -282,14 +310,27 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
         emit Sponsored(msg.sender, imdAmount);
     }
 
+    /// @notice Raises a dispute with no bond limit. Prefer the overload with `maxBond`: the stake, and so the
+    /// bond, can rise through a client deposit between a bondFor quote and this call.
     function dispute(uint256 id, string calldata note) external nonReentrant {
+        _dispute(id, note, type(uint256).max);
+    }
+
+    /// @notice Raises a dispute, reverting if the bond at execution exceeds `maxBond` (pass the bondFor quote).
+    function dispute(uint256 id, string calldata note, uint256 maxBond) external nonReentrant {
+        _dispute(id, note, maxBond);
+    }
+
+    function _dispute(uint256 id, string calldata note, uint256 maxBond) private {
         Stream storage s = _get(id);
         _requireState(s, State.Active);
         _party(s, msg.sender);
         _holdGate();
         if (s.balance == s.withdrawn) revert NoStake();
+        if (msg.sender == s.recipient && acceptedAt[id] == 0) _accept(id, s);
         string memory question = questionFor(id, msg.sender, note);
         uint256 bond = bondFor(id, msg.sender);
+        if (bond > maxBond) revert BondExceedsLimit(bond, maxBond);
         _snapshot(s);
         if (s.rate != 0) s.pausedRate = s.rate;
         s.rate = 0;
@@ -317,7 +358,6 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
     /// request. `a.requestId` is the oracle's distinct request UUID; it is consumed, never compared to the receipt.
     function onOracleResult(bytes32 requestId, OracleAttestation.Attestation calldata a, bytes calldata signature)
         external
-        nonReentrant
     {
         if (msg.sender != address(intake)) revert NotTheIntake();
         uint256 id = _pendingRequest(requestId);
@@ -329,7 +369,6 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
     /// relative-window question hash cannot be computed on chain, so no other signed answer is accepted here.
     function submitAttestation(uint256 id, OracleAttestation.Attestation calldata a, bytes calldata signature)
         external
-        nonReentrant
     {
         Stream storage s = _get(id);
         _requireState(s, State.Disputed);
@@ -349,7 +388,7 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
         Stream storage s = _streams[id];
         uint256 bond = _releaseDispute(s);
         emit DisputeFailed(id, requestId, status, reason, agreed, answered);
-        _pushExact(s.token, s.disputer, bond);
+        _pushOrDefer(id, s.token, s.disputer, bond);
     }
 
     function enforce(uint256 id) external nonReentrant {
@@ -368,8 +407,8 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
             refundAmount = _close(s);
         }
         emit Enforced(id, accepted, winner, bond);
-        _pushExact(s.token, s.client, refundAmount);
-        _pushExact(s.token, winner, bond);
+        _pushOrDefer(id, s.token, s.client, refundAmount);
+        _pushOrDefer(id, s.token, winner, bond);
     }
 
     function expireDispute(uint256 id) external nonReentrant {
@@ -378,7 +417,17 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
         if (block.timestamp - s.disputedAt <= disputeTimeout) revert DisputeNotExpired();
         uint256 bond = _releaseDispute(s);
         emit DisputeExpired(id, s.requestId);
-        _pushExact(s.token, s.disputer, bond);
+        _pushOrDefer(id, s.token, s.disputer, bond);
+    }
+
+    /// @notice Pays out a settlement amount the token refused to deliver at the time (see PayoutDeferred).
+    function claim(IERC20 token) external nonReentrant {
+        uint256 amount = claimable[address(token)][msg.sender];
+        if (amount == 0) revert NothingToClaim();
+        claimable[address(token)][msg.sender] = 0;
+        unclaimed[address(token)] -= amount;
+        emit Claimed(address(token), msg.sender, amount);
+        _pushExact(token, msg.sender, amount);
     }
 
     /// @notice Full struct getter, including termsURI. Unknown ids have State.None.
@@ -417,6 +466,13 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
 
     function canUse(address account) public view returns (bool) {
         return weir.balanceOf(account) >= minHold;
+    }
+
+    /// @notice The IMD a dispute pays right now, read from the Intake; reverts if the action is not sold or
+    /// priced above MAX_ORACLE_PRICE, in which case dispute() reverts the same way.
+    function oraclePrice() public view returns (uint256 price) {
+        price = intake.priceOf(ORACLE_ACTION, address(imd));
+        if (price == 0 || price > MAX_ORACLE_PRICE) revert OraclePriceOutOfRange(price);
     }
 
     /// @notice Preview for a specified party at the current block, including when called by an RPC reader.
@@ -491,30 +547,34 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
     }
 
     function _request(bytes memory body) private returns (bytes32 requestId, bool fundPaid) {
-        fundPaid = courtFund >= ORACLE_PRICE;
-        if (fundPaid) courtFund -= ORACLE_PRICE;
-        else _pullExact(imd, msg.sender, ORACLE_PRICE);
+        uint256 price = oraclePrice();
+        fundPaid = courtFund >= price;
+        if (fundPaid) courtFund -= price;
+        else _pullExact(imd, msg.sender, price);
         uint256 beforeBalance = imd.balanceOf(address(this));
-        imd.forceApprove(address(intake), ORACLE_PRICE);
+        imd.forceApprove(address(intake), price);
         requestId = intake.requestWithFailure(
             ORACLE_ACTION,
             body,
             IIntake.Callback(address(this), this.onOracleResult.selector),
             this.onFailure.selector,
             address(imd),
-            ORACLE_PRICE
+            price
         );
         // Even an Intake that under-pulls cannot retain an allowance against stream escrow.
         imd.forceApprove(address(intake), 0);
         uint256 afterBalance = imd.balanceOf(address(this));
-        if (afterBalance > beforeBalance || beforeBalance - afterBalance != ORACLE_PRICE) {
+        if (afterBalance > beforeBalance || beforeBalance - afterBalance != price) {
             revert TransferMismatch(address(imd));
         }
         _assertSolvent(imd);
     }
 
     /// @dev The caller has already paired `s` with the attestation; this verifies, consumes the signed oracle
-    /// request id once, and records the ruling.
+    /// request id once, and records the ruling. It moves no tokens and makes no call that can re-enter (the
+    /// signature check is a staticcall at most), so it carries no reentrancy guard and stays cheap for the
+    /// Intake's callback stipend. Records are only written when the recipient accepted the stream's terms:
+    /// a verdict on terms one side never agreed to is enforced economically but is nobody's public record.
     function _rule(uint256 id, Stream storage s, OracleAttestation.Attestation calldata a, bytes calldata signature)
         private
     {
@@ -531,14 +591,16 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
         _consume(a.requestId);
         s.ruling = accepted ? 1 : 2;
         s.state = State.Ruled;
-        if (accepted) {
-            ++records[s.client].clientLost;
-            ++records[s.recipient].recipientWon;
-        } else {
-            ++records[s.client].clientWon;
-            ++records[s.recipient].recipientLost;
+        if (acceptedAt[id] != 0) {
+            if (accepted) {
+                ++records[s.client].clientLost;
+                ++records[s.recipient].recipientWon;
+            } else {
+                ++records[s.client].clientWon;
+                ++records[s.recipient].recipientLost;
+            }
+            ++records[s.disputer].raised;
         }
-        ++records[s.disputer].raised;
         emit Verdict(id, s.requestId, a.panelJobId, accepted, s.client, s.recipient, s.disputer);
     }
 
@@ -568,8 +630,14 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
         _pushExact(s.token, s.client, amount);
     }
 
+    function _accept(uint256 id, Stream storage s) private {
+        acceptedAt[id] = block.timestamp;
+        emit Accepted(id, s.recipient, s.termsHash);
+    }
+
     function _withdraw(uint256 id, Stream storage s, uint256 amount) private {
         if (msg.sender != s.recipient) revert NotRecipient();
+        if (acceptedAt[id] == 0) _accept(id, s);
         uint256 available = _streamed(s) - s.withdrawn;
         if (amount > available) revert AmountExceedsAvailable(amount, available);
         s.withdrawn += amount;
@@ -656,8 +724,33 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
         _assertSolvent(token);
     }
 
+    /// @dev Settlement payout that must never block a state transition: if the token reverts the transfer
+    /// (a blocklist, a pause), nothing moved and the amount becomes claimable by `to` instead. A transfer that
+    /// succeeds but moves the wrong amount still reverts, as every other payout does.
+    function _pushOrDefer(uint256 id, IERC20 token, address to, uint256 amount) private {
+        if (amount == 0) return;
+        uint256 beforeBalance = token.balanceOf(address(this));
+        uint256 beforeRecipient = token.balanceOf(to);
+        (bool ok, bytes memory returndata) = address(token).call(abi.encodeCall(IERC20.transfer, (to, amount)));
+        if (!ok) {
+            claimable[address(token)][to] += amount;
+            unclaimed[address(token)] += amount;
+            emit PayoutDeferred(id, address(token), to, amount);
+            _assertSolvent(token);
+            return;
+        }
+        uint256 afterBalance = token.balanceOf(address(this));
+        uint256 afterRecipient = token.balanceOf(to);
+        if (
+            (returndata.length != 0 && (returndata.length < 32 || !abi.decode(returndata, (bool))))
+                || afterBalance > beforeBalance || beforeBalance - afterBalance != amount
+                || afterRecipient < beforeRecipient || afterRecipient - beforeRecipient != amount
+        ) revert TransferMismatch(address(token));
+        _assertSolvent(token);
+    }
+
     function _assertSolvent(IERC20 token) private view {
-        uint256 required = escrowed[address(token)];
+        uint256 required = escrowed[address(token)] + unclaimed[address(token)];
         if (token == imd) required += courtFund;
         if (token.balanceOf(address(this)) < required) revert Insolvent(address(token));
     }

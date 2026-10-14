@@ -139,11 +139,14 @@ contract WeirDisputesTest is WeirTestBase {
         assertEq(recipientWon, 1);
         assertEq(clientRaised, 0);
         assertEq(recipientRaised, 1);
-        vm.expectRevert("token blocked");
+        // A refused payout defers the bond to a claim rather than leaving the stream Ruled.
         weir.enforce(id);
-        assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Ruled));
+        assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Active));
+        assertEq(weir.claimable(address(token), recipient), AMOUNT / 20);
         token.setFail(false);
-        weir.enforce(id);
+        vm.prank(recipient);
+        weir.claim(token);
+        assertEq(weir.unclaimed(address(token)), 0);
         _solvent(token);
     }
 

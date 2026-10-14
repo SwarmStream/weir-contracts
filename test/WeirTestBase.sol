@@ -58,7 +58,14 @@ abstract contract WeirTestBase is Test {
         return _createWith(token, RATE, AMOUNT);
     }
 
+    /// @dev Creates an accepted stream, the ordinary case; `_createUnaccepted` leaves the recipient silent.
     function _createWith(IERC20 asset, uint128 rate, uint128 amount) internal returns (uint256 id) {
+        id = _createUnaccepted(asset, rate, amount);
+        vm.prank(recipient);
+        weir.accept(id);
+    }
+
+    function _createUnaccepted(IERC20 asset, uint128 rate, uint128 amount) internal returns (uint256 id) {
         vm.prank(client);
         id = weir.createStream(recipient, asset, rate, amount, TERMS, URI, bytes32(0));
     }
@@ -132,6 +139,7 @@ abstract contract WeirTestBase is Test {
             _conserved(id);
         }
         assertEq(weir.escrowed(address(asset)), expected);
+        expected += weir.unclaimed(address(asset));
         if (asset == imd) expected += weir.courtFund();
         assertGe(asset.balanceOf(address(weir)), expected);
     }

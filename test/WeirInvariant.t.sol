@@ -185,8 +185,13 @@ contract WeirHandler is Test {
         uint256 holding = gate.balanceOf(actor);
         uint256 bps = holding >= 10_000_000e18 ? 0 : holding >= 1_000_000e18 ? 100 : holding >= 100_000e18 ? 250 : 500;
         m.bond = (m.earned + m.unearned) * bps / 10_000;
+        // Some streams are never accepted by their recipient; those rulings must leave records untouched.
+        if (weir.acceptedAt(id) == 0 && seed % 3 != 0) {
+            vm.prank(m.recipient);
+            weir.accept(id);
+        }
         vm.prank(actor);
-        weir.dispute(id, "Evaluate the agreed work");
+        weir.dispute(id, "Evaluate the agreed work", m.bond);
         if (m.rate != 0) m.savedRate = m.rate;
         m.rate = 0;
         m.state = Weir.State.Disputed;
@@ -215,14 +220,16 @@ contract WeirHandler is Test {
         weir.submitAttestation(id, a, abi.encodePacked(r, s, v));
         m.state = Weir.State.Ruled;
         m.accepted = accepted;
-        if (accepted) {
-            ++record[m.client].clientLost;
-            ++record[m.recipient].recipientWon;
-        } else {
-            ++record[m.client].clientWon;
-            ++record[m.recipient].recipientLost;
+        if (weir.acceptedAt(id) != 0) {
+            if (accepted) {
+                ++record[m.client].clientLost;
+                ++record[m.recipient].recipientWon;
+            } else {
+                ++record[m.client].clientWon;
+                ++record[m.recipient].recipientLost;
+            }
+            ++record[m.disputer].raised;
         }
-        ++record[m.disputer].raised;
         ++rulings;
         ++transitions;
     }

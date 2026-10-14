@@ -32,6 +32,10 @@ contract ReviewBlocklistToken is ERC20 {
         blocked[account] = true;
     }
 
+    function unblockAddress(address account) external {
+        blocked[account] = false;
+    }
+
     function _update(address from, address to, uint256 amount) internal override {
         require(!blocked[from] && !blocked[to], "address blocked");
         super._update(from, to, amount);
@@ -115,7 +119,9 @@ contract WeirReviewTest is WeirTestBase {
         _solvent(token);
     }
 
-    function test_acceptedVerdictBlockedRecipientKeepsClientRefundLocked() public {
+    /// @dev A blocked winner no longer locks the client's unearned principal in Ruled: the bond is deferred to
+    /// a claim and the stream resumes, so the client can refund or void.
+    function test_acceptedVerdictBlockedRecipientDefersBondAndFreesClient() public {
         ReviewBlocklistToken asset = _blocklistToken();
         uint256 id = _createWith(asset, RATE, AMOUNT);
         vm.warp(vm.getBlockTimestamp() + 10);
@@ -124,25 +130,28 @@ contract WeirReviewTest is WeirTestBase {
         (bool ok,) = intake.deliver(receipt, a, _sign(a));
         assertTrue(ok);
         asset.blockAddress(recipient);
-        vm.expectRevert("address blocked");
+        vm.expectEmit(true, true, true, true, address(weir));
+        emit Weir.PayoutDeferred(id, address(asset), recipient, AMOUNT / 20);
         weir.enforce(id);
-        vm.startPrank(client);
-        vm.expectRevert(abi.encodeWithSelector(Weir.WrongState.selector, Weir.State.Ruled));
-        weir.refundMax(id);
-        vm.expectRevert(abi.encodeWithSelector(Weir.WrongState.selector, Weir.State.Ruled));
+        assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Active));
+        assertEq(weir.streams(id).bond, 0);
+        assertEq(weir.claimable(address(asset), recipient), AMOUNT / 20);
+        assertEq(weir.unclaimed(address(asset)), AMOUNT / 20);
+        _solvent(asset);
+        uint256 beforeClient = asset.balanceOf(client);
+        vm.prank(client);
         weir.void(id);
-        vm.stopPrank();
-        vm.warp(vm.getBlockTimestamp() + 365 days);
+        assertEq(asset.balanceOf(client) - beforeClient, AMOUNT - 10 * RATE);
+        vm.prank(recipient);
         vm.expectRevert("address blocked");
-        weir.enforce(id);
-        vm.expectRevert(abi.encodeWithSelector(Weir.WrongState.selector, Weir.State.Ruled));
-        weir.expireDispute(id);
-        assertEq(weir.refundable(id), AMOUNT - 10 * RATE);
-        assertEq(weir.streams(id).bond, AMOUNT / 20);
+        weir.claim(asset);
+        vm.prank(recipient);
+        vm.expectRevert("address blocked");
+        weir.withdrawMax(id);
         _solvent(asset);
     }
 
-    function test_rejectedVerdictBlockedClientStillAllowsRecipientEarnedWithdrawal() public {
+    function test_rejectedVerdictBlockedClientDefersRefundAndBondUntilClaimed() public {
         ReviewBlocklistToken asset = _blocklistToken();
         uint256 id = _createWith(asset, RATE, AMOUNT);
         vm.warp(vm.getBlockTimestamp() + 10);
@@ -151,13 +160,27 @@ contract WeirReviewTest is WeirTestBase {
         (bool ok,) = intake.deliver(receipt, a, _sign(a));
         assertTrue(ok);
         asset.blockAddress(client);
-        vm.expectRevert("address blocked");
+        uint256 bond = weir.streams(id).bond;
         weir.enforce(id);
+        assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Closed));
+        assertEq(weir.claimable(address(asset), client), AMOUNT - 10 * RATE + bond);
         uint256 beforeRecipient = asset.balanceOf(recipient);
         vm.prank(recipient);
         weir.withdrawMax(id);
         assertEq(asset.balanceOf(recipient) - beforeRecipient, 10 * RATE);
-        assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Ruled));
+        _solvent(asset);
+        vm.prank(stranger);
+        vm.expectRevert(Weir.NothingToClaim.selector);
+        weir.claim(asset);
+        asset.unblockAddress(client);
+        uint256 beforeClient = asset.balanceOf(client);
+        vm.expectEmit(true, true, true, true, address(weir));
+        emit Weir.Claimed(address(asset), client, AMOUNT - 10 * RATE + bond);
+        vm.prank(client);
+        weir.claim(asset);
+        assertEq(asset.balanceOf(client) - beforeClient, AMOUNT - 10 * RATE + bond);
+        assertEq(weir.unclaimed(address(asset)), 0);
+        assertEq(asset.balanceOf(address(weir)), 0);
         _solvent(asset);
     }
 

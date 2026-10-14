@@ -24,9 +24,14 @@ contract MockIntake is IIntake {
     address public hook;
     bytes public hookData;
     bool public hookSucceeded;
+    uint256 public price = 5e17;
 
-    function priceOf(bytes32, address) external pure returns (uint256) {
-        return 5e17;
+    function priceOf(bytes32, address) external view returns (uint256) {
+        return price;
+    }
+
+    function setPrice(uint256 newPrice) external {
+        price = newPrice;
     }
 
     function setForcedId(bytes32 id) external {

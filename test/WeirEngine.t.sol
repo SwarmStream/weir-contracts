@@ -93,7 +93,7 @@ contract WeirEngineTest is WeirTestBase {
     function test_holdGateOnlyAppliesToCreateAndDispute() public {
         gate.burn(client, 1);
         vm.expectRevert(Weir.HoldRequired.selector);
-        _create();
+        _createUnaccepted(token, RATE, AMOUNT);
         gate.mint(client, 1);
         uint256 id = _create();
         gate.burn(client, HOLD);
@@ -187,7 +187,7 @@ contract WeirEngineTest is WeirTestBase {
     function test_tokenTaxRejectedOnIncomingAndOutgoing() public {
         token.setTax(true);
         vm.expectRevert(abi.encodeWithSelector(Weir.TransferMismatch.selector, address(token)));
-        _create();
+        _createUnaccepted(token, RATE, AMOUNT);
         assertEq(weir.streamCount(), 0);
         token.setTax(false);
         uint256 id = _create();
@@ -219,7 +219,7 @@ contract WeirEngineTest is WeirTestBase {
         assertEq(legacy.balanceOf(recipient), 2 * RATE);
         FalseReturnToken bad = new FalseReturnToken();
         vm.expectRevert(abi.encodeWithSelector(SafeERC20.SafeERC20FailedOperation.selector, address(bad)));
-        _createWith(IERC20(address(bad)), RATE, AMOUNT);
+        _createUnaccepted(IERC20(address(bad)), RATE, AMOUNT);
     }
 
     function test_reentrancyBlockedAcrossIncomingAndOutgoingPaths() public {

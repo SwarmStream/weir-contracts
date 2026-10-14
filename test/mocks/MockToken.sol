@@ -8,6 +8,7 @@ contract MockToken is ERC20 {
     uint8 private immutable _decimals;
     bool public tax;
     bool public fail;
+    mapping(address => bool) public blocked;
     address public hook;
     bytes public hookData;
     bool public hookSucceeded;
@@ -37,6 +38,10 @@ contract MockToken is ERC20 {
         fail = enabled;
     }
 
+    function setBlocked(address account, bool enabled) external {
+        blocked[account] = enabled;
+    }
+
     function setHook(address target, bytes memory data) external {
         hook = target;
         hookData = data;
@@ -44,7 +49,7 @@ contract MockToken is ERC20 {
 
     function _update(address from, address to, uint256 amount) internal override {
         if (from != address(0) && to != address(0)) {
-            require(!fail, "token blocked");
+            require(!fail && !blocked[from] && !blocked[to], "token blocked");
             if (hook != address(0)) {
                 address target = hook;
                 hook = address(0);
