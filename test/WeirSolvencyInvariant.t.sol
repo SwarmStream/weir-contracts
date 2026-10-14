@@ -27,6 +27,9 @@ contract SolvencyHandler is Test {
     mapping(uint256 => uint256) public paidIn;
     mapping(uint256 => uint256) public paidOut;
     mapping(address => uint256) public pulledFrom;
+    /// @dev Deferred payouts later collected through claim(), per asset; they belong to no single stream.
+    mapping(address => uint256) public claimed;
+    uint256 public deferrals;
     uint256 public calls;
 
     constructor(Weir weir_, MockToken token_, MockToken imd_, MockToken gate_, MockIntake intake_) {
@@ -151,7 +154,40 @@ contract SolvencyHandler is Test {
         else gate.burn(actor, current - desired);
     }
 
-    function dispute(uint256 seed, bool byClient) public {
+    function accept(uint256 seed) public {
+        (uint256 id, Weir.Stream memory s) = _pick(seed);
+        if (id == 0) return;
+        vm.prank(s.recipient);
+        try weir.accept(id) {} catch {}
+        ++calls;
+    }
+
+    /// @dev A token blocklist entry makes every transfer to or from the actor revert, so settlement payouts
+    /// to it are deferred into claimable amounts instead of blocking the state change.
+    function toggleBlock(uint8 a, bool useIMD, bool on) public {
+        MockToken asset = useIMD ? imd : token;
+        asset.setBlocked(actors[a % 4], on);
+        ++calls;
+    }
+
+    function claim(uint8 a, bool useIMD) public {
+        address actor = actors[a % 4];
+        MockToken asset = useIMD ? imd : token;
+        uint256 owed = weir.claimable(address(asset), actor);
+        uint256 before = asset.balanceOf(actor);
+        vm.prank(actor);
+        try weir.claim(asset) {
+            uint256 got = asset.balanceOf(actor) - before;
+            assertEq(got, owed, "claim pays exactly what was deferred");
+            assertEq(weir.claimable(address(asset), actor), 0, "claim leaves nothing behind");
+            claimed[address(asset)] += got;
+        } catch {
+            assertEq(asset.balanceOf(actor), before, "a refused claim moves nothing");
+        }
+        ++calls;
+    }
+
+    function dispute(uint256 seed, bool byClient, bool capped) public {
         (uint256 id, Weir.Stream memory s) = _pickIn(seed, Weir.State.Active);
         if (id == 0) return;
         address actor = byClient ? s.client : s.recipient;
@@ -159,8 +195,19 @@ contract SolvencyHandler is Test {
         uint256 fund = weir.courtFund();
         uint256 beforeIMD = imd.balanceOf(actor);
         uint256 beforeToken = s.token.balanceOf(actor);
+        bool ok;
         vm.prank(actor);
-        try weir.dispute(id, "fuzzed note") {
+        if (capped) {
+            // The quote is taken in the same call, so the cap is never exceeded; a lower cap is refused.
+            try weir.dispute(id, "fuzzed note", bond) {
+                ok = true;
+            } catch {}
+        } else {
+            try weir.dispute(id, "fuzzed note") {
+                ok = true;
+            } catch {}
+        }
+        if (ok) {
             paidIn[id] += bond;
             ++disputes;
             assertEq(weir.streams(id).bond, bond, "bond quoted differs from bond pulled");
@@ -172,7 +219,7 @@ contract SolvencyHandler is Test {
                 if (s.token != imd) assertEq(beforeIMD - imd.balanceOf(actor), FEE, "payer pays the price");
             }
             if (s.token != imd) assertEq(beforeToken - s.token.balanceOf(actor), bond);
-        } catch {}
+        }
         ++calls;
     }
 
@@ -213,14 +260,21 @@ contract SolvencyHandler is Test {
         if (id == 0) return;
         uint256 beforeClient = s.token.balanceOf(s.client);
         uint256 beforeRecipient = s.token.balanceOf(s.recipient);
+        uint256 beforeUnclaimed = weir.unclaimed(address(s.token));
         try weir.enforce(id) {
             uint256 paid = s.token.balanceOf(s.client) - beforeClient;
             if (s.client != s.recipient) paid += s.token.balanceOf(s.recipient) - beforeRecipient;
             paidOut[id] += paid;
+            uint256 deferred = weir.unclaimed(address(s.token)) - beforeUnclaimed;
+            if (deferred != 0) ++deferrals;
             if (s.ruling == 1) {
-                assertEq(paid, s.bond, "accepted ruling pays only the bond");
+                assertEq(paid + deferred, s.bond, "accepted ruling pays only the bond");
             } else {
-                assertEq(paid, s.bond + (s.balance - weir.streamed(id)), "rejected ruling refunds unearned plus bond");
+                assertEq(
+                    paid + deferred,
+                    s.bond + (s.balance - weir.streamed(id)),
+                    "rejected ruling refunds unearned plus bond"
+                );
             }
         } catch {}
         _noteClosed(id);
@@ -231,17 +285,25 @@ contract SolvencyHandler is Test {
         (uint256 id, Weir.Stream memory s) = _pickIn(seed, Weir.State.Disputed);
         if (id == 0) return;
         uint256 before = s.token.balanceOf(s.disputer);
+        uint256 beforeUnclaimed = weir.unclaimed(address(s.token));
+        bool ok;
         if (expire) {
             try weir.expireDispute(id) {
-                paidOut[id] += s.token.balanceOf(s.disputer) - before;
-                assertEq(s.token.balanceOf(s.disputer) - before, s.bond);
+                ok = true;
             } catch {}
         } else {
             vm.prank(address(intake));
             try weir.onFailure(s.requestId, 2, "disagreed", 3, 5, "") {
-                paidOut[id] += s.token.balanceOf(s.disputer) - before;
-                assertEq(s.token.balanceOf(s.disputer) - before, s.bond);
+                ok = true;
             } catch {}
+        }
+        if (ok) {
+            uint256 paid = s.token.balanceOf(s.disputer) - before;
+            uint256 deferred = weir.unclaimed(address(s.token)) - beforeUnclaimed;
+            if (deferred != 0) ++deferrals;
+            paidOut[id] += paid;
+            assertEq(paid + deferred, s.bond, "a cleared dispute returns exactly the bond");
+            assertEq(weir.streams(id).bond, 0);
         }
         ++calls;
     }
@@ -278,6 +340,8 @@ contract SolvencyHandler is Test {
     function checkInvariants() external view {
         uint256 owedToken;
         uint256 owedIMD;
+        uint256 netToken;
+        uint256 netIMD;
         uint256 count = weir.streamCount();
         for (uint256 id = 1; id <= count; ++id) {
             Weir.Stream memory s = weir.streams(id);
@@ -287,7 +351,9 @@ contract SolvencyHandler is Test {
             assertEq(weir.withdrawable(id) + weir.refundable(id), s.balance - s.withdrawn, "buckets");
             assertEq(weir.stake(id), s.balance - s.withdrawn, "stake");
             assertLe(paidOut[id], paidIn[id], "stream paid out more than was paid in");
-            assertEq(paidIn[id] - paidOut[id], s.balance - s.withdrawn + s.bond, "custody differs from flows");
+            // A deferred payout stays in custody for its claimant, so a stream's net inflow is at least what
+            // its own accounting still holds; the difference is exactly the unclaimed total, checked below.
+            assertGe(paidIn[id] - paidOut[id], s.balance - s.withdrawn + s.bond, "custody differs from flows");
             if (everClosed[id]) {
                 assertEq(uint256(s.state), uint256(Weir.State.Closed), "a closed stream reopened");
                 assertEq(s.rate, 0);
@@ -301,15 +367,32 @@ contract SolvencyHandler is Test {
             if (s.state != Weir.State.Disputed && s.state != Weir.State.Ruled) {
                 assertEq(s.bond, 0, "bond outside a dispute");
             }
-            if (s.token == imd) owedIMD += s.balance - s.withdrawn + s.bond;
-            else owedToken += s.balance - s.withdrawn + s.bond;
+            if (s.token == imd) {
+                owedIMD += s.balance - s.withdrawn + s.bond;
+                netIMD += paidIn[id] - paidOut[id];
+            } else {
+                owedToken += s.balance - s.withdrawn + s.bond;
+                netToken += paidIn[id] - paidOut[id];
+            }
         }
         assertEq(weir.escrowed(address(token)), owedToken, "token escrow");
         assertEq(weir.escrowed(address(imd)), owedIMD, "imd escrow");
-        assertGe(token.balanceOf(address(weir)), owedToken, "token insolvent");
-        assertEq(token.balanceOf(address(weir)), owedToken, "token custody drift");
-        assertGe(imd.balanceOf(address(weir)), owedIMD + weir.courtFund(), "imd insolvent");
-        assertEq(imd.balanceOf(address(weir)), owedIMD + weir.courtFund(), "imd custody drift");
+        uint256 unclaimedToken = weir.unclaimed(address(token));
+        uint256 unclaimedIMD = weir.unclaimed(address(imd));
+        assertEq(netToken - claimed[address(token)], owedToken + unclaimedToken, "token flows vs custody");
+        assertEq(netIMD - claimed[address(imd)], owedIMD + unclaimedIMD, "imd flows vs custody");
+        uint256 claimableToken;
+        uint256 claimableIMD;
+        for (uint256 i; i < actors.length; ++i) {
+            claimableToken += weir.claimable(address(token), actors[i]);
+            claimableIMD += weir.claimable(address(imd), actors[i]);
+        }
+        assertEq(unclaimedToken, claimableToken, "unclaimed differs from the sum of claims");
+        assertEq(unclaimedIMD, claimableIMD, "imd unclaimed differs from the sum of claims");
+        assertGe(token.balanceOf(address(weir)), owedToken + unclaimedToken, "token insolvent");
+        assertEq(token.balanceOf(address(weir)), owedToken + unclaimedToken, "token custody drift");
+        assertGe(imd.balanceOf(address(weir)), owedIMD + unclaimedIMD + weir.courtFund(), "imd insolvent");
+        assertEq(imd.balanceOf(address(weir)), owedIMD + unclaimedIMD + weir.courtFund(), "imd custody drift");
         assertLe(weir.courtFund(), sponsored, "fund above sponsorship");
         assertEq(imd.balanceOf(address(intake)), disputes * FEE, "every dispute pays the intake exactly once");
         assertEq(imd.allowance(address(weir), address(intake)), 0, "dangling allowance");
@@ -325,7 +408,7 @@ contract WeirSolvencyInvariantTest is WeirTestBase {
         handler.create(0, 1, 500e18, 1e12, false);
         handler.create(1, 2, 20e18, 1e12, true);
         handler.create(2, 3, 1e6, 1, false);
-        bytes4[] memory selectors = new bytes4[](12);
+        bytes4[] memory selectors = new bytes4[](15);
         selectors[0] = handler.create.selector;
         selectors[1] = handler.warp.selector;
         selectors[2] = handler.deposit.selector;
@@ -338,6 +421,9 @@ contract WeirSolvencyInvariantTest is WeirTestBase {
         selectors[9] = handler.rule.selector;
         selectors[10] = handler.enforce.selector;
         selectors[11] = handler.clear.selector;
+        selectors[12] = handler.accept.selector;
+        selectors[13] = handler.toggleBlock.selector;
+        selectors[14] = handler.claim.selector;
         targetSelector(FuzzSelector(address(handler), selectors));
         targetContract(address(handler));
     }
@@ -360,22 +446,33 @@ contract WeirSolvencyInvariantTest is WeirTestBase {
     function test_handlerReachesRulingsAndClosures() public {
         handler.warp(100);
         handler.sponsor(0, 2e18);
-        handler.dispute(0, true);
+        handler.accept(0);
+        handler.dispute(0, true, true);
         handler.rule(0, true, true);
+        handler.toggleBlock(1, false, true);
         handler.enforce(0);
-        handler.dispute(1, false);
+        assertEq(handler.deferrals(), 1, "the blocked winner's bond is deferred");
+        handler.claim(1, false);
+        handler.toggleBlock(1, false, false);
+        handler.claim(1, false);
+        handler.dispute(1, false, false);
         handler.rule(1, false, false);
         handler.enforce(1);
-        handler.dispute(2, true);
+        handler.dispute(2, true, true);
         handler.clear(2, false);
-        handler.dispute(2, false);
+        handler.dispute(2, false, false);
         handler.warp(8 days);
+        handler.toggleBlock(3, false, true);
         handler.clear(2, true);
+        handler.toggleBlock(3, false, false);
+        handler.claim(3, false);
         handler.refund(0, 0, 0);
         handler.withdraw(1, 0, true);
         handler.checkInvariants();
         assertEq(handler.rulings(), 2);
         assertEq(handler.disputes(), 4);
         assertEq(handler.closedCount(), 2);
+        assertEq(handler.deferrals(), 2);
+        assertEq(weir.unclaimed(address(token)), 0);
     }
 }

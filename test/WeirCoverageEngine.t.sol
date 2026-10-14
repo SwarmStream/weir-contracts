@@ -14,7 +14,7 @@ contract WeirCoverageEngineTest is WeirTestBase {
         gate.burn(client, 1);
         assertFalse(weir.canUse(client));
         vm.expectRevert(Weir.HoldRequired.selector);
-        _create();
+        _createUnaccepted(token, RATE, AMOUNT);
         assertEq(weir.streamCount(), 0);
         gate.mint(client, 1);
         assertTrue(weir.canUse(client));
@@ -675,7 +675,7 @@ contract WeirCoverageEngineTest is WeirTestBase {
         vm.prank(client);
         taxed.approve(address(weir), type(uint256).max);
         vm.expectRevert(abi.encodeWithSelector(Weir.TransferMismatch.selector, address(taxed)));
-        _createWith(IERC20(address(taxed)), RATE, AMOUNT);
+        _createUnaccepted(IERC20(address(taxed)), RATE, AMOUNT);
         assertEq(taxed.balanceOf(address(weir)), 0);
         assertEq(weir.streamCount(), 0);
     }
@@ -686,7 +686,7 @@ contract WeirCoverageEngineTest is WeirTestBase {
         vm.prank(client);
         bad.approve(address(weir), type(uint256).max);
         vm.expectRevert(abi.encodeWithSelector(SafeERC20.SafeERC20FailedOperation.selector, address(bad)));
-        _createWith(IERC20(address(bad)), RATE, AMOUNT);
+        _createUnaccepted(IERC20(address(bad)), RATE, AMOUNT);
         assertEq(bad.balanceOf(address(weir)), 0);
         assertEq(bad.balanceOf(client), 1e12);
     }
@@ -748,7 +748,7 @@ contract WeirCoverageEngineTest is WeirTestBase {
         evil.approve(address(weir), type(uint256).max);
         uint256 id = _createWith(IERC20(address(evil)), RATE, AMOUNT);
         bytes32 requestId = _dispute(id, client);
-        evil.arm(address(weir), abi.encodeCall(weir.dispute, (id, "again")));
+        evil.arm(address(weir), abi.encodeWithSignature("dispute(uint256,string)", id, "again"));
         vm.prank(address(intake));
         weir.onFailure(requestId, 2, "disagreed", 3, 5, "");
         _assertReentryRefused(evil);
