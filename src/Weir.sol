@@ -313,6 +313,8 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
     }
 
     /// @notice Verifies and records a ruling within the Intake callback stipend; transfers no tokens.
+    /// @dev `requestId` is the Intake's receipt id, which pairs the answer to this contract's own pending
+    /// request. `a.requestId` is the oracle's distinct request UUID; it is consumed, never compared to the receipt.
     function onOracleResult(bytes32 requestId, OracleAttestation.Attestation calldata a, bytes calldata signature)
         external
         nonReentrant
@@ -322,13 +324,16 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
         _rule(id, _streams[id], a, signature);
     }
 
-    /// @notice Anyone may deliver the same signed ruling when the asynchronous callback was lost.
+    /// @notice Anyone may deliver a signed ruling whose signed request id is the stream's stored request id.
+    /// @dev The only association a permissionless caller can prove is `a.requestId == stream.requestId`. The
+    /// relative-window question hash cannot be computed on chain, so no other signed answer is accepted here.
     function submitAttestation(uint256 id, OracleAttestation.Attestation calldata a, bytes calldata signature)
         external
         nonReentrant
     {
         Stream storage s = _get(id);
         _requireState(s, State.Disputed);
+        if (a.requestId != s.requestId) revert AttestationRequestMismatch();
         _rule(id, s, a, signature);
     }
 
@@ -508,10 +513,11 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
         _assertSolvent(imd);
     }
 
+    /// @dev The caller has already paired `s` with the attestation; this verifies, consumes the signed oracle
+    /// request id once, and records the ruling.
     function _rule(uint256 id, Stream storage s, OracleAttestation.Attestation calldata a, bytes calldata signature)
         private
     {
-        if (a.requestId != s.requestId) revert AttestationRequestMismatch();
         if (a.chainId != block.chainid) revert AttestationChainMismatch();
         if (a.panelSize < PANEL_SIZE || a.quorum < QUORUM || a.agreed < a.quorum || a.agreed > a.panelSize) {
             revert PanelTooWeak();

@@ -20,18 +20,72 @@ contract WeirAttestationTest is WeirTestBase {
     }
 
     function test_wrongSenderUnknownRequestAndMismatchedAttestation() public {
-        OracleAttestation.Attestation memory a = _attestation(id, true);
+        OracleAttestation.Attestation memory a = _oracleAttestation(id, true);
+        bytes32 receipt = weir.streams(id).requestId;
         bytes memory signature = _sign(a);
         vm.expectRevert(Weir.NotTheIntake.selector);
-        weir.onOracleResult(a.requestId, a, signature);
+        weir.onOracleResult(receipt, a, signature);
+        // A valid signature for this contract does not help a receipt id this contract never issued.
         vm.expectRevert(abi.encodeWithSelector(Weir.UnknownRequest.selector, bytes32(uint256(1))));
         vm.prank(address(intake));
         weir.onOracleResult(bytes32(uint256(1)), a, signature);
-        a.requestId = keccak256("another request");
+        // The oracle UUID is not a receipt id: the Intake must pair by its own id, not by the signed one.
+        vm.expectRevert(abi.encodeWithSelector(Weir.UnknownRequest.selector, a.requestId));
+        vm.prank(address(intake));
+        weir.onOracleResult(a.requestId, a, signature);
+        // The permissionless path only takes a signed id equal to the stored request id.
         _reject(a, abi.encodeWithSelector(Weir.AttestationRequestMismatch.selector));
         a = _attestation(id, true);
         a.chainId = 1;
         _reject(a, abi.encodeWithSelector(Weir.AttestationChainMismatch.selector));
+    }
+
+    function test_callbackAcceptsDistinctOracleUUIDForItsOwnReceipt() public {
+        OracleAttestation.Attestation memory a = _oracleAttestation(id, true);
+        bytes32 receipt = weir.streams(id).requestId;
+        assertNotEq(a.requestId, receipt);
+        bytes memory signature = _sign(a);
+        vm.prank(address(intake));
+        weir.onOracleResult(receipt, a, signature);
+        assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Ruled));
+        assertEq(weir.streams(id).ruling, 1);
+        assertTrue(weir.consumed(a.requestId));
+        assertFalse(weir.consumed(receipt));
+        assertEq(weir.streams(id).requestId, receipt);
+        (, uint32 clientLost,,, uint32 raised) = weir.records(client);
+        (,, uint32 recipientWon,,) = weir.records(recipient);
+        assertEq(clientLost, 1);
+        assertEq(recipientWon, 1);
+        assertEq(raised, 1);
+        vm.prank(stranger);
+        weir.enforce(id);
+        assertEq(weir.streams(id).rate, RATE);
+        assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Active));
+    }
+
+    function test_consumedOracleUUIDCannotSettleAnotherStream() public {
+        OracleAttestation.Attestation memory a = _oracleAttestation(id, false);
+        bytes32 receipt = weir.streams(id).requestId;
+        bytes memory signature = _sign(a);
+        vm.prank(address(intake));
+        weir.onOracleResult(receipt, a, signature);
+        uint256 other = _create();
+        bytes32 otherReceipt = _dispute(other, recipient);
+        vm.expectRevert(abi.encodeWithSelector(OracleAttestationConsumer.AlreadyConsumed.selector, a.requestId));
+        vm.prank(address(intake));
+        weir.onOracleResult(otherReceipt, a, signature);
+        assertEq(uint256(weir.streams(other).state), uint256(Weir.State.Disputed));
+    }
+
+    function test_callbackRejectsAnswerSignedForAnotherConsumer() public {
+        OracleAttestation.Attestation memory a = _oracleAttestation(id, true);
+        bytes32 receipt = weir.streams(id).requestId;
+        Weir other = new Weir(gate, imd, intake, vm.addr(SIGNING_KEY), 7 days, HOLD);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNING_KEY, other.attestationDigest(a));
+        bytes memory signature = abi.encodePacked(r, s, v);
+        vm.prank(address(intake));
+        vm.expectRevert(OracleAttestationConsumer.BadSignature.selector);
+        weir.onOracleResult(receipt, a, signature);
     }
 
     function test_panelQuorumAndAgreementMinimums() public {
@@ -117,13 +171,17 @@ contract WeirAttestationTest is WeirTestBase {
 
     function test_replayViaBothPathsAndFailureAfterVerdictRejected() public {
         OracleAttestation.Attestation memory a = _attestation(id, false);
+        bytes32 receipt = weir.streams(id).requestId;
         bytes memory signature = _sign(a);
         weir.submitAttestation(id, a, signature);
         vm.expectRevert(abi.encodeWithSelector(Weir.WrongState.selector, Weir.State.Ruled));
         weir.submitAttestation(id, a, signature);
-        (bool ok,) = intake.deliver(a.requestId, a, signature);
+        (bool ok,) = intake.deliver(receipt, a, signature);
         assertFalse(ok);
-        (ok,) = intake.failRequest(a.requestId, 2, "disagreed", 2, 5);
+        OracleAttestation.Attestation memory b = _oracleAttestation(id, false);
+        (ok,) = intake.deliver(receipt, b, _sign(b));
+        assertFalse(ok);
+        (ok,) = intake.failRequest(receipt, 2, "disagreed", 2, 5);
         assertFalse(ok);
         (uint32 won,,,, uint32 raised) = weir.records(client);
         assertEq(won, 1);

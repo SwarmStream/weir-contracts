@@ -117,7 +117,8 @@ contract WeirDisputesTest is WeirTestBase {
     function test_rulingIsTokenFreeAndCallbackFits200000Gas() public {
         uint256 id = _create();
         bytes32 requestId = _dispute(id, recipient);
-        OracleAttestation.Attestation memory a = _attestation(id, true);
+        OracleAttestation.Attestation memory a = _oracleAttestation(id, true);
+        assertNotEq(a.requestId, requestId);
         bytes memory signature = _sign(a);
         uint256 before = token.balanceOf(address(weir));
         token.setFail(true);
@@ -130,7 +131,8 @@ contract WeirDisputesTest is WeirTestBase {
         assertEq(token.balanceOf(address(weir)), before);
         assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Ruled));
         assertEq(weir.streams(id).ruling, 1);
-        assertTrue(weir.consumed(requestId));
+        assertTrue(weir.consumed(a.requestId));
+        assertFalse(weir.consumed(requestId));
         (, uint32 clientLost,,, uint32 clientRaised) = weir.records(client);
         (,, uint32 recipientWon,, uint32 recipientRaised) = weir.records(recipient);
         assertEq(clientLost, 1);
@@ -238,7 +240,7 @@ contract WeirDisputesTest is WeirTestBase {
     function test_expiryStrictBoundaryAndStaleCallbackCannotAffectNewDispute() public {
         uint256 id = _create();
         bytes32 oldRequest = _dispute(id, client);
-        OracleAttestation.Attestation memory oldA = _attestation(id, true);
+        OracleAttestation.Attestation memory oldA = _oracleAttestation(id, true);
         bytes memory oldSignature = _sign(oldA);
         uint256 before = token.balanceOf(client);
         uint256 bond = weir.streams(id).bond;

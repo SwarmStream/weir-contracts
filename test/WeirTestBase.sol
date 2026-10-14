@@ -69,6 +69,23 @@ abstract contract WeirTestBase is Test {
         requestId = weir.streams(id).requestId;
     }
 
+    /// @dev Shaped like the live protocol: the signed oracle UUID differs from the Intake receipt id the
+    /// callback receives. Use with `intake.deliver(weir.streams(id).requestId, ...)`.
+    function _oracleAttestation(uint256 id, bool accepted)
+        internal
+        view
+        returns (OracleAttestation.Attestation memory a)
+    {
+        a = _attestation(id, accepted);
+        a.requestId = _oracleUuid(id);
+    }
+
+    /// @dev A sixteen-byte, left-aligned UUID distinct from every Intake receipt id the mock returns.
+    function _oracleUuid(uint256 id) internal view returns (bytes32) {
+        bytes32 receipt = weir.streams(id).requestId;
+        return bytes32(uint256(keccak256(abi.encode("oracle uuid", receipt))) & ~uint256(type(uint128).max));
+    }
+
     function _attestation(uint256 id, bool accepted) internal view returns (OracleAttestation.Attestation memory a) {
         a.requestId = weir.streams(id).requestId;
         a.chainId = block.chainid;

@@ -81,8 +81,9 @@ contract OracleConsumerConformanceTest is WeirTestBase {
     function test_acceptsFreshBoolFromVectorKeyAsDeliveredWithinStipend() public {
         uint256 id = _create();
         bytes32 requestId = _dispute(id, client);
+        // The vector's own oracle UUID is kept: it is not the Intake receipt id the callback receives.
         OracleAttestation.Attestation memory a = vector();
-        a.requestId = requestId;
+        assertNotEq(a.requestId, requestId);
         a.chainId = VECTOR_CHAIN;
         a.answerType = OracleAttestation.ANSWER_BOOL;
         a.answer = abi.encode(false);
@@ -91,7 +92,7 @@ contract OracleConsumerConformanceTest is WeirTestBase {
         vm.cool(SIGNER);
         (bool called,) = intake.deliver(requestId, a, abi.encodePacked(r, s, v));
         assertTrue(called);
-        assertTrue(weir.consumed(requestId));
+        assertTrue(weir.consumed(a.requestId));
         assertEq(weir.streams(id).ruling, 2);
     }
 }
