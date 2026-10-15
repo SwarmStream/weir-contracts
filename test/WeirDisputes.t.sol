@@ -222,13 +222,13 @@ contract WeirDisputesTest is WeirTestBase {
         vm.expectRevert(abi.encodeWithSelector(Weir.UnknownRequest.selector, bytes32(uint256(5))));
         vm.prank(address(intake));
         weir.onFailure(bytes32(uint256(5)), 2, "disagreed", 3, 5, "");
-        vm.expectRevert(Weir.InvalidFailureStatus.selector);
-        vm.prank(address(intake));
-        weir.onFailure(requestId, 0, "disagreed", 3, 5, "");
         vm.cool(address(weir));
         vm.cool(address(token));
         (bool success,) = intake.failRequest(requestId, 2, "disagreed", 3, 5);
         assertTrue(success, "failure callback must fit the stipend with a standard token");
+        assertEq(weir.claimable(address(token), recipient), bond);
+        vm.prank(recipient);
+        weir.claim(token);
         assertEq(token.balanceOf(recipient) - before, bond);
         assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Active));
         assertEq(weir.streams(id).rate, 0);
@@ -255,6 +255,7 @@ contract WeirDisputesTest is WeirTestBase {
         weir.expireDispute(id);
         assertEq(token.balanceOf(client) - before, bond);
         assertEq(weir.streams(id).rate, 0);
+        vm.warp(vm.getBlockTimestamp() + 7 days);   // the same party must wait out its re-dispute cooldown
         bytes32 freshRequest = _dispute(id, client);
         assertNotEq(freshRequest, oldRequest);
         (bool ok,) = intake.deliver(oldRequest, oldA, oldSignature);
@@ -348,6 +349,7 @@ contract WeirDisputesTest is WeirTestBase {
         vm.warp(vm.getBlockTimestamp() + 7 days + 1);
         weir.expireDispute(id);
         intake.setForcedId(requestId);
+        vm.warp(vm.getBlockTimestamp() + 7 days);   // the same party must wait out its re-dispute cooldown
         vm.expectRevert(abi.encodeWithSelector(Weir.InvalidRequestId.selector, requestId));
         _dispute(id, client);
         assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Active));

@@ -59,10 +59,10 @@ contract WeirRevisionTest is WeirTestBase {
         vm.expectRevert(abi.encodeWithSelector(Weir.WrongState.selector, Weir.State.Closed));
         vm.prank(recipient);
         weir.accept(other);
-        // A withdrawal from a closed stream still records assent but can no longer lead to a dispute.
+        // A withdrawal from a closed stream no longer records assent: acceptance needs an Active stream.
         vm.prank(recipient);
         weir.withdrawMax(other);
-        assertEq(weir.acceptedAt(other), vm.getBlockTimestamp());
+        assertEq(weir.acceptedAt(other), 0);
     }
 
     /// @dev A stranger holding WEIR cannot write a record against an address that never engaged with the stream:
@@ -170,6 +170,8 @@ contract WeirRevisionTest is WeirTestBase {
         weir.sponsor(FEE);
         intake.setPrice(FEE + 1);
         uint256 before = imd.balanceOf(client);
+        vm.expectEmit(true, false, false, true, address(weir));
+        emit Weir.Paused(id, RATE);
         vm.expectEmit(true, true, true, true, address(weir));
         emit Weir.Disputed(id, keccak256(abi.encode(address(intake), uint256(1))), client, AMOUNT / 20, false);
         vm.prank(client);
@@ -179,6 +181,7 @@ contract WeirRevisionTest is WeirTestBase {
         vm.warp(vm.getBlockTimestamp() + 7 days + 1);
         weir.expireDispute(id);
         intake.setPrice(FEE - 1);
+        vm.warp(vm.getBlockTimestamp() + 7 days);   // the same party must wait out its re-dispute cooldown
         before = imd.balanceOf(client);
         vm.expectEmit(true, true, true, true, address(weir));
         emit Weir.Disputed(id, keccak256(abi.encode(address(intake), uint256(2))), client, AMOUNT / 20, true);
@@ -228,6 +231,7 @@ contract WeirRevisionTest is WeirTestBase {
         _solvent(token);
         // A second dispute (bond pulled while unblocked) and a timed-out exit also defer while the token refuses.
         token.setBlocked(recipient, false);
+        vm.warp(vm.getBlockTimestamp() + 7 days);   // the same party must wait out its re-dispute cooldown
         bytes32 second = _dispute(id, recipient);
         token.setBlocked(recipient, true);
         assertNotEq(second, requestId);

@@ -76,19 +76,6 @@
   },
   {
     "type": "function",
-    "name": "MAX_QUESTION_BYTES",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "MAX_TERMS_URI_BYTES",
     "inputs": [],
     "outputs": [
@@ -148,6 +135,19 @@
         "name": "",
         "type": "uint16",
         "internalType": "uint16"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "TOKEN_CALL_GAS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -517,6 +517,30 @@
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "disputeEndedAt",
+    "inputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -1239,106 +1263,6 @@
   },
   {
     "type": "function",
-    "name": "submitAttestation",
-    "inputs": [
-      {
-        "name": "id",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "a",
-        "type": "tuple",
-        "internalType": "struct OracleAttestation.Attestation",
-        "components": [
-          {
-            "name": "requestId",
-            "type": "bytes32",
-            "internalType": "bytes32"
-          },
-          {
-            "name": "chainId",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
-            "name": "questionHash",
-            "type": "bytes32",
-            "internalType": "bytes32"
-          },
-          {
-            "name": "answerType",
-            "type": "uint8",
-            "internalType": "uint8"
-          },
-          {
-            "name": "answer",
-            "type": "bytes",
-            "internalType": "bytes"
-          },
-          {
-            "name": "figure",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
-            "name": "fromBlock",
-            "type": "uint64",
-            "internalType": "uint64"
-          },
-          {
-            "name": "toBlock",
-            "type": "uint64",
-            "internalType": "uint64"
-          },
-          {
-            "name": "blockHash",
-            "type": "bytes32",
-            "internalType": "bytes32"
-          },
-          {
-            "name": "panelJobId",
-            "type": "bytes32",
-            "internalType": "bytes32"
-          },
-          {
-            "name": "panelSize",
-            "type": "uint16",
-            "internalType": "uint16"
-          },
-          {
-            "name": "quorum",
-            "type": "uint16",
-            "internalType": "uint16"
-          },
-          {
-            "name": "agreed",
-            "type": "uint16",
-            "internalType": "uint16"
-          },
-          {
-            "name": "issuedAt",
-            "type": "uint64",
-            "internalType": "uint64"
-          },
-          {
-            "name": "expiresAt",
-            "type": "uint64",
-            "internalType": "uint64"
-          }
-        ]
-      },
-      {
-        "name": "signature",
-        "type": "bytes",
-        "internalType": "bytes"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
     "name": "tierBps",
     "inputs": [
       {
@@ -2046,11 +1970,6 @@
   },
   {
     "type": "error",
-    "name": "AttestationRequestMismatch",
-    "inputs": []
-  },
-  {
-    "type": "error",
     "name": "BadSignature",
     "inputs": []
   },
@@ -2065,6 +1984,17 @@
       },
       {
         "name": "maxBond",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "CooldownActive",
+    "inputs": [
+      {
+        "name": "until",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -2099,11 +2029,6 @@
   {
     "type": "error",
     "name": "InvalidConfiguration",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "InvalidFailureStatus",
     "inputs": []
   },
   {

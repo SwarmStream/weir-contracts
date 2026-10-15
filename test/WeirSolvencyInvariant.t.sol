@@ -247,8 +247,10 @@ contract SolvencyHandler is Test {
                 ++rulings;
             } catch {}
         } else {
-            try weir.submitAttestation(id, a, signature) {
-                ++rulings;
+            // A stranger can no longer deliver a ruling: only the Intake may.
+            vm.prank(address(0xBEEF));
+            try weir.onOracleResult(s.requestId, a, signature) {
+                revert("a stranger delivered a ruling");
             } catch {}
         }
         assertEq(s.token.balanceOf(address(weir)), before, "a ruling must move no tokens");
@@ -456,7 +458,7 @@ contract WeirSolvencyInvariantTest is WeirTestBase {
         handler.toggleBlock(1, false, false);
         handler.claim(1, false);
         handler.dispute(1, false, false);
-        handler.rule(1, false, false);
+        handler.rule(1, false, true);   // rulings arrive only through the Intake
         handler.enforce(1);
         handler.dispute(2, true, true);
         handler.clear(2, false);
@@ -468,11 +470,15 @@ contract WeirSolvencyInvariantTest is WeirTestBase {
         handler.claim(3, false);
         handler.refund(0, 0, 0);
         handler.withdraw(1, 0, true);
+        // The failure callback credits the bond to claimable instead of paying it, so every actor collects.
+        for (uint8 i; i < 6; ++i) {
+            handler.claim(i, false);
+        }
         handler.checkInvariants();
         assertEq(handler.rulings(), 2);
         assertEq(handler.disputes(), 4);
         assertEq(handler.closedCount(), 2);
-        assertEq(handler.deferrals(), 2);
+        assertEq(handler.deferrals(), 3, "blocked enforce payout, failure credit and blocked expiry payout");
         assertEq(weir.unclaimed(address(token)), 0);
     }
 }

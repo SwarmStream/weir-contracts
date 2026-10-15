@@ -33,6 +33,7 @@ contract WeirCoverageRevisionTest is WeirTestBase {
         // Back in Active the recipient can accept, and the next ruling counts.
         vm.prank(recipient);
         weir.accept(id);
+        vm.warp(vm.getBlockTimestamp() + 7 days);   // the same party must wait out its re-dispute cooldown
         _dispute(id, client);
         _rule(id, false);
         (uint32 clientWon,,,, uint32 raised) = weir.records(client);
@@ -44,25 +45,20 @@ contract WeirCoverageRevisionTest is WeirTestBase {
 
     /// @dev A withdrawal is acceptance in any state, including during a dispute the client raised, so a ruling
     /// delivered afterwards is recorded against both parties. A zero-amount withdrawal is enough.
-    function test_withdrawalDuringClientDisputeAcceptsAndTheRulingIsRecorded() public {
+    function test_withdrawalDuringClientDisputeDoesNotAcceptAndNoRecordIsWritten() public {
         uint256 id = _createUnaccepted(token, RATE, AMOUNT);
         vm.warp(vm.getBlockTimestamp() + 5);
         _dispute(id, client);
         assertEq(weir.acceptedAt(id), 0);
         uint256 before = token.balanceOf(recipient);
-        vm.expectEmit(true, true, true, true, address(weir));
-        emit Weir.Accepted(id, recipient, TERMS);
         vm.prank(recipient);
         weir.withdraw(id, 0);
         assertEq(token.balanceOf(recipient), before);
-        assertEq(weir.acceptedAt(id), vm.getBlockTimestamp());
+        assertEq(weir.acceptedAt(id), 0, "a withdrawal during a dispute never accepts the terms");
         _rule(id, true);
         (, uint32 clientLost,,, uint32 clientRaised) = weir.records(client);
         (,, uint32 recipientWon,, uint32 recipientRaised) = weir.records(recipient);
-        assertEq(clientLost, 1);
-        assertEq(clientRaised, 1);
-        assertEq(recipientWon, 1);
-        assertEq(recipientRaised, 0);
+        assertEq(uint256(clientLost) + clientRaised + recipientWon + recipientRaised, 0, "no record without acceptance");
     }
 
     // ------------------------------------------------------------------ claims
@@ -127,35 +123,6 @@ contract WeirCoverageRevisionTest is WeirTestBase {
     }
 
     // ------------------------------------------------------------------ unguarded ruling functions
-
-    /// @dev The ruling functions no longer carry a reentrancy guard. During the bond pull of a first dispute the
-    /// stream is already Disputed with a zero request id, so a re-entrant token can reach submitAttestation with a
-    /// zero signed request id; only the signature check stands between it and a ruling.
-    function test_reenteringSubmitAttestationDuringTheBondPullIsRefusedBySignature() public {
-        ReentrantToken evil = new ReentrantToken();
-        evil.mint(client, 1e12);
-        vm.prank(client);
-        evil.approve(address(weir), type(uint256).max);
-        uint256 id = _createWith(IERC20(address(evil)), RATE, AMOUNT);
-        OracleAttestation.Attestation memory a = _attestation(id, true);
-        a.requestId = bytes32(0);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(0xbad5ec, weir.attestationDigest(a));
-        evil.arm(address(weir), abi.encodeCall(weir.submitAttestation, (id, a, abi.encodePacked(r, s, v))));
-        bytes32 receipt = _dispute(id, client);
-        assertEq(evil.attempts(), 1);
-        assertFalse(evil.lastSucceeded());
-        assertEq(evil.lastError(), OracleAttestationConsumer.BadSignature.selector);
-        Weir.Stream memory st = weir.streams(id);
-        assertEq(uint256(st.state), uint256(Weir.State.Disputed));
-        assertEq(st.ruling, 0);
-        assertEq(st.requestId, receipt);
-        assertFalse(weir.consumed(bytes32(0)));
-        // After the receipt is stored, the same path with the stale (zero) id is refused by the id check.
-        evil.arm(address(weir), abi.encodeCall(weir.submitAttestation, (id, a, abi.encodePacked(r, s, v))));
-        vm.prank(client);
-        weir.deposit(id, 1);
-        assertEq(evil.lastError(), Weir.AttestationRequestMismatch.selector);
-    }
 
     function test_onOracleResultCannotBeReenteredFromATokenBecauseOnlyTheIntakeMayCall() public {
         ReentrantToken evil = new ReentrantToken();

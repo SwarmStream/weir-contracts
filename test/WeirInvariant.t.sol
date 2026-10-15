@@ -30,6 +30,11 @@ contract WeirHandler is Test {
     MockIntake public immutable intake;
     uint256 public count;
     uint256 public fund;
+    /// @dev Bonds the callback credited to claimable instead of paying out, per token.
+    uint256 public unclaimedToken;
+    uint256 public unclaimedIMD;
+    /// @dev When each party's last dispute on a stream ended (mirrors the contract's re-dispute cooldown).
+    mapping(uint256 => mapping(address => uint256)) private endedAt;
     mapping(uint256 => Model) private model;
     mapping(address => Weir.Record) private record;
     address[3] public actors;
@@ -182,6 +187,7 @@ contract WeirHandler is Test {
         if (m.state != Weir.State.Active || m.earned + m.unearned == 0) return;
         address actor = byClient ? m.client : m.recipient;
         if (!weir.canUse(actor)) return;
+        if (endedAt[id][actor] != 0 && vm.getBlockTimestamp() < endedAt[id][actor] + 7 days) return;
         uint256 holding = gate.balanceOf(actor);
         uint256 bps = holding >= 10_000_000e18 ? 0 : holding >= 1_000_000e18 ? 100 : holding >= 100_000e18 ? 250 : 500;
         m.bond = (m.earned + m.unearned) * bps / 10_000;
@@ -250,6 +256,7 @@ contract WeirHandler is Test {
         assertEq(m.token.balanceOf(winner) - before, m.bond + (m.accepted ? 0 : m.unearned));
         m.bond = 0;
         if (m.accepted) {
+            endedAt[id][m.disputer] = vm.getBlockTimestamp();
             m.rate = m.savedRate;
             m.state = Weir.State.Active;
         } else {
@@ -270,12 +277,17 @@ contract WeirHandler is Test {
         if (expire) {
             if (vm.getBlockTimestamp() <= m.deadline) return;
             weir.expireDispute(id);
+            assertEq(m.token.balanceOf(m.disputer) - before, m.bond);
         } else {
             bytes32 requestId = weir.streams(id).requestId;
             vm.prank(address(intake));
             weir.onFailure(requestId, 2, "disagreed", 3, 5, "");
+            // The failure callback makes no token call: the bond is credited to claimable instead.
+            assertEq(m.token.balanceOf(m.disputer), before);
+            if (m.token == imd) unclaimedIMD += m.bond;
+            else unclaimedToken += m.bond;
         }
-        assertEq(m.token.balanceOf(m.disputer) - before, m.bond);
+        endedAt[id][m.disputer] = vm.getBlockTimestamp();
         m.bond = 0;
         m.state = Weir.State.Active;
         ++transitions;
@@ -301,8 +313,10 @@ contract WeirHandler is Test {
         }
         assertEq(weir.escrowed(address(token)), owedToken);
         assertEq(weir.escrowed(address(imd)), owedIMD);
-        assertEq(token.balanceOf(address(weir)), owedToken);
-        assertEq(imd.balanceOf(address(weir)), owedIMD + fund);
+        assertEq(weir.unclaimed(address(token)), unclaimedToken);
+        assertEq(weir.unclaimed(address(imd)), unclaimedIMD);
+        assertEq(token.balanceOf(address(weir)), owedToken + unclaimedToken);
+        assertEq(imd.balanceOf(address(weir)), owedIMD + unclaimedIMD + fund);
         assertEq(weir.courtFund(), fund);
         assertEq(imd.allowance(address(weir), address(intake)), 0);
         for (uint256 i; i < actors.length; ++i) {

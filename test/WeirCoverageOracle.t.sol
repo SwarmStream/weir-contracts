@@ -235,31 +235,6 @@ contract WeirCoverageOracleTest is WeirTestBase {
 
     // ------------------------------------------------------------------ missed callbacks and synthetic submission
 
-    function test_submitAttestationWithSyntheticMatchingReceiptAfterMissedCallback() public {
-        // ABI coverage only: the live oracle signs a UUID distinct from the receipt and cannot produce
-        // this signature. The author's documented recovery limitation remains; this is not a live fallback.
-        OracleAttestation.Attestation memory a = _attestation(id, false);
-        bytes memory signature = _sign(a);
-        (bool ok, bytes memory result) =
-            address(intake).call{gas: 60_000}(abi.encodeCall(intake.deliver, (receipt, a, signature)));
-        assertTrue(ok);
-        (bool delivered,) = abi.decode(result, (bool, bytes));
-        assertFalse(delivered, "Intake catches the failed callback");
-        assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Disputed), "under-gassed delivery misses");
-        vm.warp(vm.getBlockTimestamp() + 1 days);
-        vm.prank(stranger);
-        weir.submitAttestation(id, a, signature);
-        assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Ruled));
-        assertEq(weir.streams(id).ruling, 2);
-        assertTrue(weir.consumed(a.requestId));
-        vm.expectRevert(abi.encodeWithSelector(Weir.WrongState.selector, Weir.State.Ruled));
-        weir.submitAttestation(id, a, signature);
-        (bool again,) = intake.deliver(receipt, a, signature);
-        assertFalse(again);
-        weir.enforce(id);
-        assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Closed));
-    }
-
     function test_missedLiveCallbackCanExpireThenReceiveFreshVerdict() public {
         OracleAttestation.Attestation memory oldAnswer = _oracleAttestation(id, false);
         bytes memory oldSignature = _sign(oldAnswer);
@@ -303,24 +278,6 @@ contract WeirCoverageOracleTest is WeirTestBase {
         _solvent(token);
     }
 
-    function test_submitAttestationRefusesWrongStreamUnknownStreamAndForeignRequestId() public {
-        OracleAttestation.Attestation memory a = _attestation(id, true);
-        bytes memory signature = _sign(a);
-        uint256 other = _create();
-        vm.expectRevert(abi.encodeWithSelector(Weir.WrongState.selector, Weir.State.Active));
-        weir.submitAttestation(other, a, signature);
-        vm.expectRevert(abi.encodeWithSelector(Weir.UnknownStream.selector, 99));
-        weir.submitAttestation(99, a, signature);
-        _dispute(other, recipient);
-        vm.expectRevert(Weir.AttestationRequestMismatch.selector);
-        weir.submitAttestation(other, a, signature);
-        a.requestId = _oracleUuid(id);
-        signature = _sign(a);
-        vm.expectRevert(Weir.AttestationRequestMismatch.selector);
-        weir.submitAttestation(id, a, signature);
-        _stillDisputed(a);
-    }
-
     // ------------------------------------------------------------------ onFailure
 
     function test_onFailureReturnsBondAndSecondDisputeWorks() public {
@@ -330,6 +287,10 @@ contract WeirCoverageOracleTest is WeirTestBase {
         emit Weir.DisputeFailed(id, receipt, 1, "body_refused", 0, 0);
         (bool ok,) = intake.failRequest(receipt, 1, "body_refused", 0, 0);
         assertTrue(ok);
+        // The callback makes no token call: the bond is credited and the disputer collects it with claim().
+        assertEq(weir.claimable(address(token), client), bond);
+        vm.prank(client);
+        weir.claim(token);
         assertEq(token.balanceOf(client) - before, bond);
         Weir.Stream memory s = weir.streams(id);
         assertEq(uint256(s.state), uint256(Weir.State.Active));
@@ -359,13 +320,10 @@ contract WeirCoverageOracleTest is WeirTestBase {
         _solvent(token);
     }
 
-    function test_onFailureRefusedFromStrangerBadStatusAndAfterRuling() public {
+    function test_onFailureRefusedFromStrangerAndAfterRuling() public {
         vm.prank(stranger);
         vm.expectRevert(Weir.NotTheIntake.selector);
         weir.onFailure(receipt, 1, "body_refused", 0, 0, "");
-        vm.prank(address(intake));
-        vm.expectRevert(Weir.InvalidFailureStatus.selector);
-        weir.onFailure(receipt, 3, "unknown", 0, 0, "");
         vm.prank(address(intake));
         vm.expectRevert(abi.encodeWithSelector(Weir.UnknownRequest.selector, keccak256("x")));
         weir.onFailure(keccak256("x"), 1, "body_refused", 0, 0, "");
@@ -387,9 +345,10 @@ contract WeirCoverageOracleTest is WeirTestBase {
         evil.arm(address(weir), abi.encodeCall(weir.enforce, (other)));
         (bool ok,) = intake.failRequest(otherReceipt, 2, "disagreed", 3, 5);
         assertTrue(ok);
-        assertFalse(evil.lastSucceeded());
-        assertEq(evil.lastError(), ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
+        // onFailure makes no call into the stream token at all, so a hostile token never gets to re-enter.
+        assertEq(evil.attempts(), 0);
         assertEq(uint256(weir.streams(other).state), uint256(Weir.State.Active));
+        assertGt(weir.claimable(address(evil), client), 0);
     }
 
     // ------------------------------------------------------------------ expireDispute
@@ -431,7 +390,7 @@ contract WeirCoverageOracleTest is WeirTestBase {
         (bool ok,) = intake.deliver(receipt, a, signature);
         assertFalse(ok);
         vm.expectRevert(abi.encodeWithSelector(Weir.WrongState.selector, Weir.State.Active));
-        weir.submitAttestation(id, a, signature);
+        _deliver(id, a, signature);
         _solvent(token);
     }
 

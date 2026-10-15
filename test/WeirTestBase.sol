@@ -70,10 +70,23 @@ abstract contract WeirTestBase is Test {
         id = weir.createStream(recipient, asset, rate, amount, TERMS, URI, bytes32(0));
     }
 
+    /// @dev Receipt ids by stream, remembered when a test raises a dispute through `_dispute`, so `_deliver`
+    /// makes no external call of its own before the Intake callback (an armed vm.expectRevert stays aimed at it).
+    mapping(uint256 => bytes32) internal receiptOf;
+
     function _dispute(uint256 id, address party) internal returns (bytes32 requestId) {
         vm.prank(party);
         weir.dispute(id, "Work reviewed against the agreed terms.");
         requestId = weir.streams(id).requestId;
+        receiptOf[id] = requestId;
+    }
+
+    /// @dev Delivers a signed ruling the way the live protocol does: the Intake calls onOracleResult with the receipt id.
+    function _deliver(uint256 id, OracleAttestation.Attestation memory a, bytes memory signature) internal {
+        bytes32 receipt = receiptOf[id];
+        if (receipt == bytes32(0)) receipt = weir.streams(id).requestId;
+        vm.prank(address(intake));
+        weir.onOracleResult(receipt, a, signature);
     }
 
     /// @dev Shaped like the live protocol: the signed oracle UUID differs from the Intake receipt id the
@@ -93,7 +106,7 @@ abstract contract WeirTestBase is Test {
         return bytes32(uint256(keccak256(abi.encode("oracle uuid", receipt))) & ~uint256(type(uint128).max));
     }
 
-    /// @dev Synthetic receipt-matched input for submitAttestation's ABI/validation tests only. The live
+    /// @dev Synthetic input whose signed id equals the receipt id, for ABI/validation tests only. The live
     /// oracle signs a distinct UUID; settlement scenarios must use _oracleAttestation instead.
     function _attestation(uint256 id, bool accepted) internal view returns (OracleAttestation.Attestation memory a) {
         a.requestId = weir.streams(id).requestId;

@@ -43,29 +43,12 @@ contract ReviewBlocklistToken is ERC20 {
 }
 
 contract WeirReviewTest is WeirTestBase {
-    /// @dev A domain-valid signature proves neither the Intake receipt nor the question association.
-    function test_unrelatedQuestionCannotSettlePendingDispute() public {
-        uint256 id = _create();
-        bytes32 receipt = _dispute(id, client);
-        OracleAttestation.Attestation memory a = _oracleAttestation(id, false);
-        a.questionHash = keccak256("Unrelated question bought by a stranger for this consumer");
-        bytes memory signature = _sign(a);
-        assertNotEq(a.requestId, receipt);
-        vm.expectRevert(Weir.AttestationRequestMismatch.selector);
-        vm.prank(stranger);
-        weir.submitAttestation(id, a, signature);
-        assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Disputed));
-        assertFalse(weir.consumed(a.requestId));
-    }
-
     function test_liveUUIDCannotBeResubmittedAndMissingCallbackExitsOnlyAfterTimeout() public {
         uint256 id = _create();
         bytes32 receipt = _dispute(id, client);
         OracleAttestation.Attestation memory a = _oracleAttestation(id, false);
         bytes memory signature = _sign(a);
         assertNotEq(a.requestId, receipt);
-        vm.expectRevert(Weir.AttestationRequestMismatch.selector);
-        weir.submitAttestation(id, a, signature);
         uint256 bond = weir.streams(id).bond;
         uint256 beforeClient = token.balanceOf(client);
         vm.warp(vm.getBlockTimestamp() + 7 days);

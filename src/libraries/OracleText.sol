@@ -49,6 +49,16 @@ library OracleText {
         }
     }
 
+    /// @dev Replaces every double-quote character with a single quote so quoted user text cannot close its own quotes.
+    function neutralize(string memory text) internal pure returns (string memory) {
+        bytes memory data = bytes(text);
+        bytes memory out = new bytes(data.length);
+        for (uint256 i; i < data.length; ++i) {
+            out[i] = data[i] == '"' ? bytes1("'") : data[i];
+        }
+        return string(out);
+    }
+
     /// @dev Escapes every JSON control byte, plus quotes and backslashes. Preserves validated UTF-8.
     function escape(string memory text) internal pure returns (string memory) {
         bytes memory data = bytes(text);

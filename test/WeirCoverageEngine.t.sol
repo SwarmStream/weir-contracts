@@ -751,8 +751,9 @@ contract WeirCoverageEngineTest is WeirTestBase {
         evil.arm(address(weir), abi.encodeWithSignature("dispute(uint256,string)", id, "again"));
         vm.prank(address(intake));
         weir.onFailure(requestId, 2, "disagreed", 3, 5, "");
-        _assertReentryRefused(evil);
+        assertEq(evil.attempts(), 0, "onFailure makes no token call");
         assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Active));
+        vm.warp(vm.getBlockTimestamp() + 7 days + 1);   // past the same party's re-dispute cooldown
         _dispute(id, client);
         vm.warp(vm.getBlockTimestamp() + 7 days + 1);
         evil.arm(address(weir), abi.encodeCall(weir.void, (id)));
