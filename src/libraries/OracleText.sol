@@ -49,12 +49,14 @@ library OracleText {
         }
     }
 
-    /// @dev Replaces every double-quote character with a single quote so quoted user text cannot close its own quotes.
+    /// @dev Replaces every double-quote character with a single quote, and every control byte below 0x20 (newlines, tabs)
+    /// with a space, so quoted user text can neither close its quotes nor start a visually separate paragraph.
     function neutralize(string memory text) internal pure returns (string memory) {
         bytes memory data = bytes(text);
         bytes memory out = new bytes(data.length);
         for (uint256 i; i < data.length; ++i) {
-            out[i] = data[i] == '"' ? bytes1("'") : data[i];
+            bytes1 c = data[i];
+            out[i] = c == '"' ? bytes1("'") : (uint8(c) < 0x20 ? bytes1(" ") : c);
         }
         return string(out);
     }

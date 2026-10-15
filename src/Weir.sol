@@ -173,7 +173,7 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
     mapping(address => uint256) public unclaimed;
     /// @notice When this party's last dispute on the stream ended (expiry, failure or an accepted ruling); zero if none.
     /// A party may not dispute the same stream again until `disputeTimeout` after that, so one party cannot relock a stream.
-    mapping(uint256 => mapping(address => uint256)) internal disputeEndedAt;
+    mapping(uint256 => mapping(address => uint256)) public disputeEndedAt;
 
     constructor(
         IERC20 weir_,
@@ -410,7 +410,7 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
             s.pausedRate = 0;
             s.state = State.Active;
             disputeEndedAt[id][s.disputer] = block.timestamp;
-            if (s.rate != 0) emit Restarted(id, s.rate);
+            emit Restarted(id, s.rate);
         } else {
             refundAmount = _close(s);
         }
@@ -756,7 +756,7 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
         uint256 beforeRecipient = token.balanceOf(to);
         (bool ok, bytes memory returndata) =
             address(token).call{gas: TOKEN_CALL_GAS}(abi.encodeCall(IERC20.transfer, (to, amount)));
-        bool refused = !ok || (returndata.length != 0 && (returndata.length < 32 || !abi.decode(returndata, (bool))));
+        bool refused = !ok || (returndata.length != 0 && (returndata.length < 32 || abi.decode(returndata, (uint256)) != 1));
         uint256 afterBalance = token.balanceOf(address(this));
         if (refused) {
             // A refusal must not have moved anything; otherwise the books would be wrong.
@@ -780,7 +780,6 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
         claimable[address(token)][to] += amount;
         unclaimed[address(token)] += amount;
         emit PayoutDeferred(id, address(token), to, amount);
-        _assertSolvent(token);
     }
 
     function _assertSolvent(IERC20 token) private view {

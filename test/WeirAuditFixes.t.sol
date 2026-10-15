@@ -271,6 +271,58 @@ contract WeirAuditFixesTest is WeirTestBase {
         assertGe(spent, drained / 4 * 3, "drained funds are matched by the attacker's own spending");
     }
 
+    // ---------------------------------------------------------------- 9. review findings (2026-10-15 adversarial review)
+
+    function test_failureCallbackFitsItsStipendEvenWhenTheTokensBalanceOfBurnsGas() public {
+        QuirkyToken q = new QuirkyToken();
+        uint256 id = _quirkyStream(q);
+        bytes32 receipt = _dispute(id, recipient);
+        uint256 bond = weir.streams(id).bond;
+        q.setBurnBalance(true);
+        (bool delivered,) = intake.failRequest(receipt, 2, "x", 0, 0);
+        assertTrue(delivered, "onFailure must not read the token's balance");
+        assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Active));
+        assertEq(weir.claimable(address(q), recipient), bond);
+    }
+
+    function test_aNonBoolReturnWordDefersInsteadOfBlockingEnforcement() public {
+        QuirkyToken q = new QuirkyToken();
+        uint256 id = _quirkyStream(q);
+        _dispute(id, client);
+        _rule(id, false);
+        uint256 refundable = weir.refundable(id);
+        uint256 bond = weir.streams(id).bond;
+        q.setGarbageReturn(true);
+        weir.enforce(id);
+        assertEq(uint256(weir.streams(id).state), uint256(Weir.State.Closed));
+        assertEq(weir.claimable(address(q), client), refundable + bond, "both payouts deferred");
+        q.setGarbageReturn(false);
+        vm.prank(client);
+        weir.claim(IERC20(address(q)));
+        _solvent(IERC20(address(q)));
+    }
+
+    function test_controlBytesInQuotedTextBecomeSpaces() public {
+        vm.prank(client);
+        uint256 id = weir.createStream(recipient, token, RATE, AMOUNT, TERMS, "line one\nline two\ttab", 0);
+        string memory q = weir.questionFor(id, recipient, "a\nb");
+        assertTrue(_has(q, "line one line two tab"));
+        assertTrue(_has(q, '"a b"'));
+        bytes memory b = bytes(q);
+        for (uint256 i; i < b.length; ++i) {
+            assertGe(uint8(b[i]), 0x20, "no control byte survives in the question");
+        }
+    }
+
+    function test_theCooldownEndIsReadableOnChain() public {
+        uint256 id = _create();
+        assertEq(weir.disputeEndedAt(id, recipient), 0);
+        _dispute(id, recipient);
+        vm.warp(vm.getBlockTimestamp() + 7 days + 1);
+        weir.expireDispute(id);
+        assertEq(weir.disputeEndedAt(id, recipient), vm.getBlockTimestamp());
+    }
+
     // ---------------------------------------------------------------- helpers
 
     function _has(string memory haystack, string memory needle) internal pure returns (bool) {
