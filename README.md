@@ -26,7 +26,7 @@ out = "out"
 libs = ["lib"]
 solc = "0.8.26"
 optimizer = true
-optimizer_runs = 20
+optimizer_runs = 1
 evm_version = "cancun"
 via_ir = false
 bytecode_hash = "none"
@@ -101,7 +101,7 @@ In every state, anyone owed a deferred payout may `claim(token)`.
 
 **Acceptance.** The client agrees to the terms by creating the stream. The recipient agrees by calling `accept(id)` on an Active stream, by a withdrawal of a positive amount while the stream is Active, or by its own dispute; a zero-amount withdrawal, or any withdrawal while the stream is Disputed, Ruled or Closed, never records acceptance. `acceptedAt(id)` records when, and `Accepted` is emitted once. Acceptance changes nothing about the money. It decides whether a ruling counts: `records` are updated for both parties only when the recipient had accepted the stream before the ruling. A client can still dispute a stream its recipient never touched, and the ruling still settles the bond and principal, but it is nobody's public record, so a stranger cannot stack losses against an address by streaming a token of its own making at it, and a client cannot farm wins against a phantom recipient. The `Verdict` event is emitted for every ruling; indexers that build their own records must join it with `Accepted`. Two cooperating addresses can still farm records against each other, as with any reputation system without identity.
 
-Creation and dispute require the **caller** to hold at least `minHold` WEIR at that moment. Other actions do not require a holding. Holdings are not locked and are not a proof of identity. Both parties can raise a dispute; no third party can do so. A dispute needs positive stake, but its rounded bond can be zero. A zero-bond dispute whose fee the court fund pays costs its raiser only gas, so a sponsored fund can be spent down by anyone eligible, including on streams of a worthless token between two addresses one person controls; the brief specifies a permissionless fund without quota, so sponsors should treat it as a gift to all users rather than a reserve.
+Creation and dispute require the **caller** to hold at least `minHold` WEIR at that moment. Other actions do not require a holding. Holdings are not locked and are not a proof of identity. Both parties can raise a dispute; no third party can do so. A dispute needs positive stake, but its rounded bond can be zero. Every dispute costs its raiser at least 20% of the oracle fee in IMD (`DISPUTER_SHARE_BPS`), and the court fund subsidises at most five disputes per UTC day, so draining the fund with dust disputes on worthless tokens costs the drainer real IMD and at most about four times that per day (five subsidised disputes cost it 0.5 IMD and use up 2 IMD of the fund). The fund is still a permissionless gift to all users and a determined griefer can keep it near empty, so sponsors should not treat it as a reserve.
 
 Borrowed WEIR counts in full. A caller can borrow 10,000,000 WEIR, create or dispute with a zero bond, and repay the holding in the same transaction. There is no minimum holding period or later balance check. The bond is not a reliable deterrent to frivolous disputes; the oracle fee may also be paid by sponsorship.
 
@@ -120,7 +120,7 @@ The 10,000 WEIR gate still applies. `bond = floor(stake * tierBps / 10000)` is m
 
 **Bond limit.** The stake, and so the bond, can rise between a `bondFor` quote and the dispute transaction, because the client may `deposit` at any time while the stream is Active, including in front of the recipient's dispute. `dispute(id, note, maxBond)` reverts with `BondExceedsLimit` if the bond at execution exceeds `maxBond`; the site should pass the quote it displayed. `dispute(id, note)` is the same call with no limit and is kept for the approved ABI; integrations should prefer the bounded form.
 
-Anyone can `sponsor(imdAmount)`. If the tracked court fund holds at least the live oracle price, it pays the entire fee. Otherwise the disputer pays the entire fee; partial sponsorship remains untouched. Stream principal and bonds denominated in IMD are never sponsorship. The application reads `priceOf(ORACLE_ACTION, IMD)` from the Intake, approves the Intake for exactly that amount, calls `requestWithFailure`, checks the exact debit, and clears any residual allowance. Unsolicited direct token transfers are not credited; there is no recovery or sweep mechanism.
+Anyone can `sponsor(imdAmount)`. The disputer always pays 20% of the live oracle fee itself. If the tracked court fund holds the other 80% and fewer than five disputes have been subsidised this UTC day, the fund pays that 80%; otherwise the disputer pays the entire fee. Partial sponsorship remains untouched. Stream principal and bonds denominated in IMD are never sponsorship. The application reads `priceOf(ORACLE_ACTION, IMD)` from the Intake, approves the Intake for exactly that amount, calls `requestWithFailure`, checks the exact debit, and clears any residual allowance. Unsolicited direct token transfers are not credited; there is no recovery or sweep mechanism.
 
 Dispute snapshots accrual, preserves the last running rate (emitting `Paused`), and sets the current rate to zero. The result callback `onOracleResult` only verifies the signature, stores the ruling and updates records; it moves no tokens. A true answer means accepted work (`ruling = 1`); false means rejected work (`ruling = 2`). An accepted ruling's `enforce` resumes the saved rate and emits `Restarted`.
 
@@ -131,7 +131,7 @@ Dispute snapshots accrual, preserves the last running rate (emitting `Paused`), 
 
 Thus a winning disputer gets its own bond back; a losing disputer's counterparty gets it. A request failure (ANY status) or strict timeout (`now > disputedAt + disputeTimeout`) releases the bond to its original disputer and leaves an Active, paused stream; after a failure the bond is credited to `claimable`, after a timeout it is pushed or deferred as above. The client must explicitly restart. **Re-dispute cooldown:** when a dispute ends (expiry, failure or an accepted ruling) the party who raised it cannot dispute the same stream again until `disputeTimeout` later (`disputeEndedAt(id, party)`, error `CooldownActive(until)`); the other party is not affected, and the client's void, refund, pause and restart stay available whenever the stream is Active. Existing earned funds remain withdrawable throughout. An already paused stream retains its saved rate when disputed; accepted enforcement resumes that rate.
 
-An accepted ruling does not remove the client's later Active-state permissions. It does not award all remaining principal immediately. Eligible parties can dispute again after a previous dispute ends. The permissionless court fund can be consumed through repeated requests; this design has no quota, cooldown, or subsidy guarantee.
+An accepted ruling does not remove the client's later Active-state permissions. It does not award all remaining principal immediately. Eligible parties can dispute again after a previous dispute ends, subject to the re-dispute cooldown below. The court fund is protected by the 20% disputer share and the five-per-day subsidy limit, not by a guarantee that a subsidy is always available.
 
 `records(address)` packs five `uint32` counters: `clientWon`, `clientLost`, `recipientWon`, `recipientLost`, `raised`. Each ruling on a stream the recipient accepted increments the appropriate win/loss counter for both parties and `raised` for its disputer exactly once; a ruling on a stream the recipient never accepted increments nothing. Failures and expired requests do not increment verdict records. Events preserve historical requests and rulings; the Stream fields describe the most recent dispute and current outstanding bond.
 
@@ -170,7 +170,8 @@ v2 applies the fixes from the IMD swarm's audit of the v1 contract (job `6303049
 | Missing `Paused` and `Restarted` events | Emitted on dispute and on an accepted enforcement |
 | README overstated reentrancy-guard coverage; unreachable question-length guard | README corrected; the guard and `MAX_QUESTION_BYTES` are removed |
 | Bond is tier bps of the stake the disputer leaves behind | Unchanged and documented: a disputer can shrink its own bond by withdrawing or refunding first |
+| Cheap disputes could drain the court fund (accepted in v1) | Every dispute costs the disputer 20% of the fee, and the fund subsidises at most five disputes per UTC day |
 | A client can void or refund before a recipient's dispute lands | Unchanged and documented: recipient-won records exist only with the client's consent |
 
-The optimizer setting is now `optimizer_runs = 20` (was 200) so the runtime stays under the 24,576-byte limit.
+The optimizer setting is now `optimizer_runs = 1` (was 200) so the runtime stays under the 24,576-byte limit (24,540 bytes).
 

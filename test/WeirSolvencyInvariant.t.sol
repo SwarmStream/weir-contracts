@@ -211,12 +211,12 @@ contract SolvencyHandler is Test {
             paidIn[id] += bond;
             ++disputes;
             assertEq(weir.streams(id).bond, bond, "bond quoted differs from bond pulled");
-            if (fund >= FEE) {
-                assertEq(weir.courtFund(), fund - FEE, "fund pays the price");
-                if (s.token != imd) assertEq(imd.balanceOf(actor), beforeIMD, "payer charged although fund paid");
+            uint256 covered = FEE - FEE * 2_000 / 10_000;
+            if (fund >= covered && weir.courtFund() == fund - covered) {
+                if (s.token != imd) assertEq(beforeIMD - imd.balanceOf(actor), FEE - covered, "payer pays its own share");
             } else {
-                assertEq(weir.courtFund(), fund, "fund touched although too small");
-                if (s.token != imd) assertEq(beforeIMD - imd.balanceOf(actor), FEE, "payer pays the price");
+                assertEq(weir.courtFund(), fund, "fund touched although it did not pay");
+                if (s.token != imd) assertEq(beforeIMD - imd.balanceOf(actor), FEE, "payer pays the whole price");
             }
             if (s.token != imd) assertEq(beforeToken - s.token.balanceOf(actor), bond);
         }

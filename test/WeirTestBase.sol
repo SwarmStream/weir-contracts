@@ -13,6 +13,9 @@ abstract contract WeirTestBase is Test {
     uint256 internal constant SIGNING_KEY = 0xfeed1234;
     uint256 internal constant HOLD = 10_000e18;
     uint256 internal constant FEE = 5e17;
+    /// @dev The disputer's own 20% of the oracle fee, and what the court fund covers when it pays.
+    uint256 internal constant OWN = FEE * 2_000 / 10_000;
+    uint256 internal constant FUNDED = FEE - OWN;
     uint128 internal constant AMOUNT = 1_000e6;
     uint128 internal constant RATE = 1e6;
     bytes32 internal constant TERMS = keccak256("Deliver the agreed software and tests");

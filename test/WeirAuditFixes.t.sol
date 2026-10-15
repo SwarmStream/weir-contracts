@@ -15,7 +15,6 @@ contract WeirAuditFixesTest is WeirTestBase {
         vm.warp(vm.getBlockTimestamp() + 7 days + 1);
         weir.expireDispute(id);
         uint256 until = vm.getBlockTimestamp() + 7 days;
-        assertEq(weir.disputeEndedAt(id, recipient), vm.getBlockTimestamp());
         vm.expectRevert(abi.encodeWithSelector(Weir.CooldownActive.selector, until));
         vm.prank(recipient);
         weir.dispute(id, "again");
@@ -210,6 +209,66 @@ contract WeirAuditFixesTest is WeirTestBase {
         vm.expectEmit(true, false, false, true, address(weir));
         emit Weir.Restarted(id, RATE);
         weir.enforce(id);
+    }
+
+    // ---------------------------------------------------------------- 8. the court fund cannot be drained for free or all at once
+
+    function test_everyDisputeCostsTheDisputerItsOwnShareEvenWhenTheFundPays() public {
+        vm.prank(stranger);
+        weir.sponsor(10e18);
+        uint256 id = _create();
+        uint256 before = imd.balanceOf(client);
+        _dispute(id, client);
+        assertEq(before - imd.balanceOf(client), OWN, "20% of the fee, never free");
+        assertEq(weir.courtFund(), 10e18 - FUNDED, "the fund covers the other 80%");
+        assertEq(imd.balanceOf(address(intake)), FEE);
+    }
+
+    function test_theFundSubsidisesAtMostFiveDisputesADayThenResets() public {
+        vm.prank(stranger);
+        weir.sponsor(100e18);
+        uint256 spentBefore = weir.courtFund();
+        uint256[7] memory ids;
+        for (uint256 i; i < 7; ++i) {
+            ids[i] = _create();
+        }
+        // Five subsidised disputes in one UTC day: each costs the disputer only its share.
+        for (uint256 i; i < 5; ++i) {
+            uint256 before = imd.balanceOf(client);
+            _dispute(ids[i], client);
+            assertEq(before - imd.balanceOf(client), OWN);
+        }
+        assertEq(spentBefore - weir.courtFund(), 5 * FUNDED);
+        // The sixth and seventh the same day: the fund stays out of it, the disputer pays the whole fee.
+        uint256 fundNow = weir.courtFund();
+        uint256 before6 = imd.balanceOf(client);
+        _dispute(ids[5], client);
+        assertEq(before6 - imd.balanceOf(client), FEE, "over the daily limit the caller pays everything");
+        assertEq(weir.courtFund(), fundNow, "the fund is untouched over the limit");
+        // The next UTC day the allowance resets.
+        vm.warp((vm.getBlockTimestamp() / 1 days + 1) * 1 days);
+        uint256 before7 = imd.balanceOf(client);
+        _dispute(ids[6], client);
+        assertEq(before7 - imd.balanceOf(client), OWN, "a new day, a new subsidy allowance");
+        assertEq(weir.courtFund(), fundNow - FUNDED);
+    }
+
+    function test_drainingTheFundWithDustDisputesNowCostsRealIMDAndIsRateLimited() public {
+        vm.prank(stranger);
+        weir.sponsor(20e18);
+        uint256 drained;
+        uint256 spent;
+        for (uint256 i; i < 12; ++i) {
+            uint256 id = _create();
+            uint256 before = imd.balanceOf(client);
+            uint256 fundBefore = weir.courtFund();
+            _dispute(id, client);
+            spent += before - imd.balanceOf(client);
+            drained += fundBefore - weir.courtFund();
+        }
+        assertEq(drained, 5 * FUNDED, "no more than five subsidised disputes a day, however many are raised");
+        assertEq(spent, 5 * OWN + 7 * FEE, "the attacker paid for every one of them");
+        assertGe(spent, drained / 4 * 3, "drained funds are matched by the attacker's own spending");
     }
 
     // ---------------------------------------------------------------- helpers

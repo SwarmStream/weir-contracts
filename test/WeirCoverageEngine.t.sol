@@ -435,45 +435,53 @@ contract WeirCoverageEngineTest is WeirTestBase {
         uint256 b = _create();
         uint256 c = _create();
         vm.prank(stranger);
-        weir.sponsor(FEE - 1);
-        assertEq(weir.courtFund(), FEE - 1);
+        weir.sponsor(FUNDED - 1);
+        assertEq(weir.courtFund(), FUNDED - 1);
         uint256 before = imd.balanceOf(client);
         vm.expectEmit(true, true, true, true, address(weir));
         emit Weir.Disputed(a, keccak256(abi.encode(address(intake), uint256(1))), client, AMOUNT / 20, false);
         _dispute(a, client);
-        assertEq(before - imd.balanceOf(client), FEE, "caller pays below the price");
-        assertEq(weir.courtFund(), FEE - 1);
+        assertEq(before - imd.balanceOf(client), FEE, "caller pays the whole fee when the fund cannot cover its part");
+        assertEq(weir.courtFund(), FUNDED - 1);
 
         vm.prank(stranger);
         weir.sponsor(1);
-        assertEq(weir.courtFund(), FEE);
+        assertEq(weir.courtFund(), FUNDED);
         before = imd.balanceOf(recipient);
         vm.expectEmit(true, true, true, true, address(weir));
         emit Weir.Disputed(b, keccak256(abi.encode(address(intake), uint256(2))), recipient, AMOUNT / 20, true);
         _dispute(b, recipient);
-        assertEq(before - imd.balanceOf(recipient), 0, "fund pays exactly at the price");
+        assertEq(before - imd.balanceOf(recipient), OWN, "the disputer always pays its own share");
         assertEq(weir.courtFund(), 0);
 
         vm.prank(stranger);
         weir.sponsor(3 * FEE);
         before = imd.balanceOf(client);
         _dispute(c, client);
-        assertEq(before - imd.balanceOf(client), 0, "fund pays above the price");
-        assertEq(weir.courtFund(), 2 * FEE);
+        assertEq(before - imd.balanceOf(client), OWN, "the disputer always pays its own share");
+        assertEq(weir.courtFund(), 3 * FEE - FUNDED);
         assertEq(imd.balanceOf(address(intake)), 3 * FEE);
         _solvent(imd);
     }
 
-    function test_courtFundPayerHasNoIMDAndNoApprovalOnceFunded() public {
+    function test_courtFundStillNeedsTheDisputersOwnShare() public {
         uint256 id = _create();
         vm.prank(stranger);
         weir.sponsor(FEE);
         imd.burn(client, imd.balanceOf(client));
         vm.prank(client);
         imd.approve(address(weir), 0);
+        // A funded court no longer makes a dispute free: with no IMD and no approval it is refused.
+        vm.expectRevert();
+        vm.prank(client);
+        weir.dispute(id, "free?");
+        imd.mint(client, OWN);
+        vm.prank(client);
+        imd.approve(address(weir), OWN);
         _dispute(id, client);
-        assertEq(weir.courtFund(), 0);
+        assertEq(weir.courtFund(), FEE - FUNDED);
         assertEq(imd.balanceOf(address(intake)), FEE);
+        assertEq(imd.balanceOf(client), 0);
     }
 
     function test_sponsorZeroRefusedAndFundOnlyLeavesThroughTheIntake() public {
@@ -486,11 +494,11 @@ contract WeirCoverageEngineTest is WeirTestBase {
         assertEq(weir.escrowed(address(imd)), 0);
         uint256 id = _create();
         _dispute(id, client);
-        assertEq(weir.courtFund(), 10e18 - FEE);
-        assertEq(imd.balanceOf(address(weir)), 10e18 - FEE);
+        assertEq(weir.courtFund(), 10e18 - FUNDED);
+        assertEq(imd.balanceOf(address(weir)), 10e18 - FUNDED);
         _rule(id, false);
         weir.enforce(id);
-        assertEq(imd.balanceOf(address(weir)), 10e18 - FEE, "ruling never touches the fund");
+        assertEq(imd.balanceOf(address(weir)), 10e18 - FUNDED, "ruling never touches the fund");
     }
 
     // ------------------------------------------------------------------ body
@@ -511,7 +519,7 @@ contract WeirCoverageEngineTest is WeirTestBase {
         weir.dispute(other, "done");
         assertEq(intake.lastBody(), expectedOther);
         assertEq(intake.lastAction(), weir.ORACLE_ACTION());
-        assertEq(intake.lastAmount(), weir.ORACLE_PRICE());
+        assertEq(intake.lastAmount(), FEE);
     }
 
     function test_bodyChangesWithBlockNumberAndStrangerCannotPreview() public {

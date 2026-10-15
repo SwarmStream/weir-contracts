@@ -30,6 +30,8 @@ contract WeirHandler is Test {
     MockIntake public immutable intake;
     uint256 public count;
     uint256 public fund;
+    uint256 private fundDayIdx;
+    uint256 private fundCount;
     /// @dev Bonds the callback credited to claimable instead of paying out, per token.
     uint256 public unclaimedToken;
     uint256 public unclaimedIMD;
@@ -203,7 +205,16 @@ contract WeirHandler is Test {
         m.state = Weir.State.Disputed;
         m.disputer = actor;
         m.deadline = vm.getBlockTimestamp() + 7 days;
-        if (fund >= 5e17) fund -= 5e17;
+        // The fund covers 80% of the fee, for at most five disputes per UTC day.
+        uint256 day = vm.getBlockTimestamp() / 1 days;
+        if (day != fundDayIdx) {
+            fundDayIdx = day;
+            fundCount = 0;
+        }
+        if (fund >= 4e17 && fundCount < 5) {
+            fund -= 4e17;
+            ++fundCount;
+        }
         ++transitions;
     }
 

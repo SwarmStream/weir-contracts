@@ -47,13 +47,13 @@ contract WeirDisputesTest is WeirTestBase {
         // A large IMD stream alone must never be mistaken for sponsorship.
         uint256 largeId = _createWith(imd, 1e18, 10e18);
         vm.prank(stranger);
-        weir.sponsor(FEE - 1);
+        weir.sponsor(FUNDED - 1);
         uint256 beforeIMD = imd.balanceOf(client);
         uint256 bond = weir.bondFor(largeId, client);
         _dispute(largeId, client);
         assertEq(beforeIMD - imd.balanceOf(client), FEE + bond);
-        assertEq(weir.courtFund(), FEE - 1);
-        assertEq(imd.balanceOf(address(weir)), weir.escrowed(address(imd)) + FEE - 1);
+        assertEq(weir.courtFund(), FUNDED - 1);
+        assertEq(imd.balanceOf(address(weir)), weir.escrowed(address(imd)) + FUNDED - 1);
         vm.prank(stranger);
         weir.sponsor(1);
         beforeIMD = imd.balanceOf(recipient);
@@ -61,7 +61,7 @@ contract WeirDisputesTest is WeirTestBase {
         vm.expectEmit(true, true, true, true, address(weir));
         emit Weir.Disputed(id, keccak256(abi.encode(address(intake), uint256(2))), recipient, bond, true);
         _dispute(id, recipient);
-        assertEq(beforeIMD - imd.balanceOf(recipient), bond);
+        assertEq(beforeIMD - imd.balanceOf(recipient), bond + OWN, "the disputer still pays its own share");
         assertEq(weir.courtFund(), 0);
         _solvent(imd);
     }

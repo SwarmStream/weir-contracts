@@ -167,7 +167,7 @@ contract WeirRevisionTest is WeirTestBase {
     function test_courtFundPaysOnlyWhenItCoversTheLivePrice() public {
         uint256 id = _create();
         vm.prank(stranger);
-        weir.sponsor(FEE);
+        weir.sponsor(FUNDED);
         intake.setPrice(FEE + 1);
         uint256 before = imd.balanceOf(client);
         vm.expectEmit(true, false, false, true, address(weir));
@@ -177,7 +177,7 @@ contract WeirRevisionTest is WeirTestBase {
         vm.prank(client);
         weir.dispute(id, "late");
         assertEq(before - imd.balanceOf(client), FEE + 1);
-        assertEq(weir.courtFund(), FEE);
+        assertEq(weir.courtFund(), FUNDED);
         vm.warp(vm.getBlockTimestamp() + 7 days + 1);
         weir.expireDispute(id);
         intake.setPrice(FEE - 1);
@@ -187,8 +187,8 @@ contract WeirRevisionTest is WeirTestBase {
         emit Weir.Disputed(id, keccak256(abi.encode(address(intake), uint256(2))), client, AMOUNT / 20, true);
         vm.prank(client);
         weir.dispute(id, "late");
-        assertEq(imd.balanceOf(client), before);
-        assertEq(weir.courtFund(), 1);
+        assertEq(before - imd.balanceOf(client), OWN - 1, "the disputer pays 20% of the live price");
+        assertEq(weir.courtFund(), 0);
         _solvent(imd);
     }
 

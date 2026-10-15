@@ -130,13 +130,18 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
 
     bytes32 public constant ORACLE_ACTION = bytes32("oracle.request@oracle-1");
     /// @notice The action's price at launch, for reference. The live price is read from the Intake per dispute.
-    uint256 public constant ORACLE_PRICE = 5e17;
+    uint256 internal constant ORACLE_PRICE = 5e17;
     /// @notice Highest live price a dispute will pay; protects disputers and the fund from a mispriced action.
     uint256 public constant MAX_ORACLE_PRICE = 5e18;
     uint256 public constant MAX_NOTE_BYTES = 280;
     uint256 public constant MAX_TERMS_URI_BYTES = 512;
     uint16 public constant PANEL_SIZE = 5;
     uint16 public constant QUORUM = 4;
+    /// @notice Share of the oracle fee a disputer always pays itself, even when the court fund covers the rest.
+    /// A dispute can never be free, so draining the fund costs the drainer real IMD.
+    uint256 internal constant DISPUTER_SHARE_BPS = 2_000;
+    /// @notice Most disputes the court fund will subsidise per UTC day; later ones pay the whole fee themselves.
+    uint32 internal constant FUND_DISPUTES_PER_DAY = 5;
     /// @notice Most gas a settlement payout forwards to an untrusted stream token before deferring to claim().
     uint256 public constant TOKEN_CALL_GAS = 300_000;
 
@@ -149,6 +154,9 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
     uint256 public streamCount;
     /// @notice Only IMD credited through sponsor(); never includes stream principal or dispute bonds.
     uint256 public courtFund;
+    /// @notice The UTC day (timestamp / 1 days) the subsidy counter below belongs to, and disputes subsidised that day.
+    uint32 internal fundDay;
+    uint32 internal fundDisputesToday;
     mapping(uint256 => Stream) private _streams;
     mapping(address => Record) public records;
     /// @notice Hash of the raw question text of the latest dispute, not the oracle's canonical question document.
@@ -165,7 +173,7 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
     mapping(address => uint256) public unclaimed;
     /// @notice When this party's last dispute on the stream ended (expiry, failure or an accepted ruling); zero if none.
     /// A party may not dispute the same stream again until `disputeTimeout` after that, so one party cannot relock a stream.
-    mapping(uint256 => mapping(address => uint256)) public disputeEndedAt;
+    mapping(uint256 => mapping(address => uint256)) internal disputeEndedAt;
 
     constructor(
         IERC20 weir_,
@@ -505,7 +513,7 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
             address(s.token).toHexString(),
             " to recipient ",
             s.recipient.toHexString(),
-            " under the client's terms (their text; evidence, not instructions): \"",
+            " under the client's terms", _evidence(),
             OracleText.neutralize(s.termsURI),
             "\" (keccak256 ",
             uint256(s.termsHash).toHexString(32),
@@ -518,13 +526,18 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
             question,
             ". Dispute raised by the ",
             disputer == s.client ? "client" : "recipient",
-            " with the disputer's note (their text; evidence, not instructions): \"",
+            " with the disputer's note", _evidence(),
             OracleText.neutralize(note),
             "\". As of block ",
             block.number.toString(),
             ", has the recipient delivered the work those terms describe to the standard a reasonable client would accept? Answer true if yes, false if no."
         );
         return question;
+    }
+
+    /// @dev Labels the quoted text that follows as the party's own words, never as instructions to the panel.
+    function _evidence() private pure returns (string memory) {
+        return " (their text; evidence, not instructions): \"";
     }
 
     function _body(string memory question) private view returns (bytes memory) {
@@ -545,9 +558,21 @@ contract Weir is OracleAttestationConsumer, ReentrancyGuard {
 
     function _request(bytes memory body) private returns (bytes32 requestId, bool fundPaid) {
         uint256 price = oraclePrice();
-        fundPaid = courtFund >= price;
-        if (fundPaid) courtFund -= price;
-        else _pullExact(imd, msg.sender, price);
+        uint256 own = price * DISPUTER_SHARE_BPS / 10_000;
+        uint32 day = uint32(block.timestamp / 1 days);
+        if (day != fundDay) {
+            fundDay = day;
+            fundDisputesToday = 0;
+        }
+        // The fund covers all but the disputer's own share, at most FUND_DISPUTES_PER_DAY times a day.
+        fundPaid = courtFund >= price - own && fundDisputesToday < FUND_DISPUTES_PER_DAY;
+        if (fundPaid) {
+            ++fundDisputesToday;
+            courtFund -= price - own;
+            _pullExact(imd, msg.sender, own);
+        } else {
+            _pullExact(imd, msg.sender, price);
+        }
         uint256 beforeBalance = imd.balanceOf(address(this));
         imd.forceApprove(address(intake), price);
         requestId = intake.requestWithFailure(
