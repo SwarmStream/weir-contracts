@@ -1,16 +1,10 @@
 {
-  "kind": "evm_project",
-  "token": {
-    "contract": "LaunchToken",
-    "name": "Weir",
-    "symbol": "WEIR",
-    "decimals": 18
-  },
+  "kind": "evm_contracts",
   "contracts": [
     {
       "contract": "Weir",
       "constructorArgs": [
-        "$token",
+        "0x58b82fa656ecf47a0dca5be6bad06b92e22f7dbe",
         "0x5f7bb59365ce557c26dbcaa4ee9d39a4b95b7127",
         "0xa43e6f75ee006411f79ac1c84120606c2330de82",
         "0x5598aa9146215bc13eb26f2c692ad1461fd32982",
@@ -19,11 +13,5 @@
       ]
     }
   ],
-  "pool": {
-    "pairedCurrency": "0x5f7bb59365ce557c26dbcaa4ee9d39a4b95b7127",
-    "fee": 12500,
-    "tickSpacing": 60,
-    "initialPrice": "79228162514264337593543950336"
-  },
-  "notes": "Weir (src/Weir.sol) is the single application contract: an ownerless per-second token stream engine with a dispute court that asks the IdentityMD oracle one bool question per dispute (panel 5, quorum 4). Constructor (IERC20 weir, IERC20 imd, IIntake intake, address oracleSigner, uint40 disputeTimeout, uint256 minHold), all immutable: weir = $token (the WEIR launch token deployed in the same transaction); imd = IMD on Robinhood Chain 0x5f7bb59365ce557c26dbcaa4ee9d39a4b95b7127, the asset the oracle fee and the court fund are paid in; intake = IdentityMD Intake v2 0xa43e6f75ee006411f79ac1c84120606c2330de82, the only caller allowed to deliver oracle results or failures, whose live price for oracle.request@oracle-1 (0.5 IMD at launch) is read per dispute and refused above 5 IMD; oracleSigner = the IdentityMD oracle signer 0x5598aa9146215bc13eb26f2c692ad1461fd32982, which must sign every attestation in Weir's own EIP-712 domain; disputeTimeout = 604800 seconds (7 days) after which a stale dispute can be expired by anyone; minHold = 10000e18 WEIR, the balance a caller must hold to create a stream or raise a dispute. The constructor only validates and stores these values and calls no other contract. Weir has no owner, admin, fee, pause switch, upgrade path or backend signer, so $owner is not used and no argument grants a privileged role. Who can call what: the client creates, deposits, pauses, restarts, adjusts, refunds and voids its own stream; the recipient accepts the terms and withdraws; client or recipient disputes, optionally with a maxBond cap (bond = remaining stake x tier bps by the disputer's WEIR balance: 500/250/100/0 bps at 0/100k/1M/10M WEIR); anyone sponsors the IMD court fund, enforces a ruling or expires a timed-out dispute; an account whose settlement payout a token refused claims it later; the court fund leaves only through the Intake. Rulings are recorded against both parties on streams the recipient accepted. Weir is allocated no WEIR at launch; it holds only what clients stream through it, the bonds disputers post, deferred payouts and the sponsored court fund. LaunchToken (Weir, WEIR, 18 decimals) is the fixed-supply launch token with no constructor arguments; the factory receives the whole supply and splits it. The pool pairs WEIR with IMD at the launch policy fee (12500 = 1.25%, tick spacing 60); the deployer derives the opening price from the policy's 2,500 IMD opening market cap, so initialPrice is the policy's placeholder value. Source is MIT and reviewed by the swarm's panel only; it is not an audit."
+  "notes": "Weir v2 (contracts only). The weir argument is the EXISTING WEIR launch token on Robinhood Chain; no new token or pool is created. Weir (src/Weir.sol) is the single application contract: an ownerless per-second token stream engine with a dispute court that asks the IdentityMD oracle one bool question per dispute (panel 5, quorum 4)."
 }
